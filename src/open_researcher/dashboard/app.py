@@ -27,7 +27,7 @@ def create_app(repo_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/docs/{name}")
     def api_doc(name: str):
-        allowed = ["project-understanding.md", "evaluation.md", "program.md"]
+        allowed = ["project-understanding.md", "evaluation.md", "program.md", "literature.md", "ideas.md"]
         if name not in allowed:
             return {"error": "not found"}
         path = repo_path / ".research" / name

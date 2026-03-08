@@ -21,6 +21,8 @@ def test_init_creates_research_directory():
         assert (research / "config.yaml").is_file()
         assert (research / "project-understanding.md").is_file()
         assert (research / "evaluation.md").is_file()
+        assert (research / "literature.md").is_file()
+        assert (research / "ideas.md").is_file()
         assert (research / "results.tsv").is_file()
         assert (research / "scripts" / "record.py").is_file()
         assert (research / "scripts" / "rollback.sh").is_file()

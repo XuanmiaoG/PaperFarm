@@ -9,42 +9,50 @@ from rich.console import Console
 from rich.panel import Panel
 
 
+def _has_real_content(path: Path) -> bool:
+    """Check if a markdown file has real content beyond headings and comments."""
+    if not path.exists():
+        return False
+    content = path.read_text()
+    if "<!--" in content and content.strip().endswith("-->"):
+        return False
+    return any(
+        line.strip()
+        and not line.startswith("#")
+        and not line.startswith(">")
+        and "<!--" not in line
+        and not line.startswith("|")
+        for line in content.splitlines()
+    )
+
+
 def _detect_phase(research: Path) -> int:
-    """Detect current research phase (1-4) based on file contents."""
+    """Detect current research phase (1-5) based on file contents."""
     pu = research / "project-understanding.md"
+    lit = research / "literature.md"
     ev = research / "evaluation.md"
     results = research / "results.tsv"
 
     # Phase 1: project understanding not filled
-    if pu.exists():
-        content = pu.read_text()
-        if "<!--" in content and content.strip().endswith("-->"):
-            return 1
-        has_content = any(
-            line.strip() and not line.startswith("#") and not line.startswith(">") and "<!--" not in line
-            for line in content.splitlines()
-        )
-        if not has_content:
-            return 1
+    if not _has_real_content(pu):
+        return 1
 
-    # Phase 2: evaluation not filled
-    if ev.exists():
-        content = ev.read_text()
-        has_content = any(
-            line.strip() and not line.startswith("#") and not line.startswith(">") and "<!--" not in line
-            for line in content.splitlines()
-        )
-        if not has_content:
-            return 2
+    # Phase 2: literature review not filled
+    if not _has_real_content(lit):
+        return 2
 
-    # Phase 3/4: check results
+    # Phase 3: evaluation not filled
+    if not _has_real_content(ev):
+        return 3
+
+    # Phase 4/5: check results
     if results.exists():
         rows = list(csv.DictReader(results.open(), delimiter="\t"))
         if len(rows) == 0:
-            return 3
-        return 4
+            return 4
+        return 5
 
-    return 3
+    return 4
 
 
 def parse_research_state(repo_path: Path) -> dict:
@@ -104,9 +112,10 @@ def parse_research_state(repo_path: Path) -> dict:
 
 PHASE_NAMES = {
     1: "Phase 1: Understand Project",
-    2: "Phase 2: Design Evaluation",
-    3: "Phase 3: Establish Baseline",
-    4: "Phase 4: Experiment Loop",
+    2: "Phase 2: Research Related Work",
+    3: "Phase 3: Design Evaluation",
+    4: "Phase 4: Establish Baseline",
+    5: "Phase 5: Experiment Loop",
 }
 
 

@@ -29,6 +29,9 @@ def test_parse_state_with_results():
         # Write filled project understanding
         (research / "project-understanding.md").write_text("# Project\n\nThis is a real project description.")
 
+        # Write filled literature review
+        (research / "literature.md").write_text("# Literature Review\n\nFound relevant papers on optimization.")
+
         # Write filled evaluation
         (research / "evaluation.md").write_text("# Eval\n\nThis uses accuracy as the metric.")
 
@@ -69,6 +72,62 @@ def test_parse_state_empty():
         state = parse_research_state(Path(tmpdir))
         assert state["total"] == 0
         assert state["phase"] == 1  # project understanding not filled
+
+
+def test_detect_phase_2_literature():
+    """Phase 2 when project-understanding has content but literature doesn't."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        research = Path(tmpdir, ".research")
+        research.mkdir()
+
+        (research / "config.yaml").write_text(
+            "mode: autonomous\n"
+            "metrics:\n"
+            "  primary:\n"
+            "    name: ''\n"
+            "    direction: ''\n"
+        )
+        (research / "results.tsv").write_text(
+            "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+        )
+        # Filled project understanding
+        (research / "project-understanding.md").write_text(
+            "# Project\n\nThis is a real project description."
+        )
+        # Empty literature review
+        (research / "literature.md").write_text("<!-- empty -->")
+        (research / "evaluation.md").write_text("<!-- empty -->")
+
+        state = parse_research_state(Path(tmpdir))
+        assert state["phase"] == 2  # literature not filled
+
+
+def test_detect_phase_3_evaluation():
+    """Phase 3 when literature has content but evaluation doesn't."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        research = Path(tmpdir, ".research")
+        research.mkdir()
+
+        (research / "config.yaml").write_text(
+            "mode: autonomous\n"
+            "metrics:\n"
+            "  primary:\n"
+            "    name: ''\n"
+            "    direction: ''\n"
+        )
+        (research / "results.tsv").write_text(
+            "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+        )
+        (research / "project-understanding.md").write_text(
+            "# Project\n\nThis is a real project description."
+        )
+        (research / "literature.md").write_text(
+            "# Literature Review\n\nFound relevant papers on optimization."
+        )
+        (research / "evaluation.md").write_text("<!-- empty -->")
+
+        state = parse_research_state(Path(tmpdir))
+        assert state["phase"] == 3  # evaluation not filled
 
 
 def test_print_status_english_output(capsys):

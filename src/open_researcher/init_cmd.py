@@ -34,6 +34,8 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
         ("config.yaml.j2", "config.yaml"),
         ("project-understanding.md.j2", "project-understanding.md"),
         ("evaluation.md.j2", "evaluation.md"),
+        ("literature.md.j2", "literature.md"),
+        ("ideas.md.j2", "ideas.md"),
     ]:
         template = env.get_template(template_name)
         content = template.render(context)

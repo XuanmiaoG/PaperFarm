@@ -19,25 +19,66 @@
 **Goal:** Build a comprehensive understanding of this repository.
 
 **Instructions:**
-1. Read ALL source files, documentation, configs, and tests in this repo
+1. Read the project's documentation, README, and key source files
 2. Identify:
    - The project's purpose and core functionality
    - Code structure and key modules/classes/functions
    - Existing tests and evaluation mechanisms
    - Dependencies and environment requirements
    - Entry points (CLI commands, scripts, HTTP endpoints)
-3. Write your analysis to `.research/project-understanding.md` following the template there
-4. If `mode: collaborative` → stop and ask the human to review before continuing
+3. For large repos (100+ files): focus on entry points, core modules, and test files first. Skip vendored/generated code.
+4. Write your analysis to `.research/project-understanding.md` following the template there
+5. If `mode: collaborative` → stop and ask the human to review before continuing
 
 ---
 
-## Phase 2: Design Evaluation
+## Phase 2: Research Related Work
+
+**Goal:** Survey the latest techniques and implementations related to this project. Build a knowledge base for experiment ideas.
+
+**Instructions:**
+1. Based on your project understanding, identify 3-5 search queries:
+   - The project's core technique or algorithm
+   - The specific metric you want to improve
+   - Alternative approaches or competing implementations
+   - Include year filters for recency (e.g., "2024 2025")
+
+2. **If you have web search capability** (WebSearch, web browsing, URL fetch):
+   - Search for each query
+   - Look at: recent arXiv papers, GitHub repos with similar goals, technical blog posts, benchmark results
+   - Read the most promising results in detail
+
+3. **If you don't have web search capability:**
+   - Use your training knowledge to identify relevant techniques
+   - Check if the repo's README/docs mention any references or related work
+   - Look for papers cited in code comments
+
+4. For each relevant finding, extract:
+   - **What:** The technique or approach
+   - **Why it's relevant:** How it might apply to this project
+   - **Expected impact:** High / Medium / Low
+   - **Complexity:** Easy / Medium / Hard to implement
+   - **Source:** URL, paper reference, or "training knowledge"
+
+5. Write findings to `.research/literature.md`
+
+6. Generate an initial **idea backlog** in `.research/ideas.md`:
+   - Rank ideas by (expected impact × ease of implementation)
+   - Include both literature-inspired and your own ideas
+   - Mark each as "literature" or "original" source
+   - Categorize: architecture / training / data / regularization / infrastructure
+
+7. If `mode: collaborative` → stop and ask the human to review before continuing
+
+---
+
+## Phase 3: Design Evaluation
 
 **Goal:** Create a measurable evaluation system for experiments.
 
 **Instructions:**
-1. Based on your project understanding, design an evaluation system:
-   - **Primary metric**: one number that determines keep/discard (e.g. accuracy, loss, test_pass_rate, latency_ms)
+1. Based on your project understanding AND literature review, design an evaluation system:
+   - **Primary metric**: one number that determines keep/discard (e.g. accuracy, loss, test_pass_rate, latency_ms, throughput)
    - **Secondary metrics**: additional numbers for context (optional)
    - **Evaluation method**: exact commands to run and how to extract the metric from output
    - **Baseline method**: how to establish the initial baseline measurement
@@ -49,7 +90,7 @@
 
 ---
 
-## Phase 3: Establish Baseline
+## Phase 4: Establish Baseline
 
 **Instructions:**
 1. Create the experiment branch:
@@ -74,15 +115,12 @@
 
 ---
 
-## Phase 4: Experiment Loop
+## Phase 5: Experiment Loop
 
 **LOOP FOREVER:**
 
 1. **Review state**: Check `git status` and read `.research/results.tsv` to see past experiments
-2. **Propose experiment**: Think of an improvement to try. Consider:
-   - What has worked/failed in past experiments (results.tsv)
-   - Ideas from the codebase, papers, or domain knowledge
-   - Both incremental tweaks and bold architectural changes
+2. **Choose experiment** using the strategy below
 3. **Implement**: Make code changes
 4. **Commit**: `git add -A && git commit -m "exp: <brief description>"`
 5. **Run experiment**: Execute the evaluation command from `.research/evaluation.md`, redirect output:
@@ -112,7 +150,51 @@
      ```bash
      bash .research/scripts/rollback.sh
      ```
-10. **Continue**: Go to step 1. NEVER STOP unless the human interrupts.
+10. **Update ideas**: Mark the tried idea in `.research/ideas.md` as "tried"
+11. **Continue**: Go to step 1. NEVER STOP unless the human interrupts.
+
+### Experiment Strategy
+
+When choosing what to try next (step 2), follow this priority:
+
+**Priority 1 — Literature-informed ideas:**
+Pick the highest-ranked untried idea from `.research/ideas.md`. Adapt the technique to this specific codebase.
+
+**Priority 2 — Result-driven iterations:**
+Analyze `results.tsv`: what direction is improving metrics? Try variations of successful experiments (e.g., if dropout=0.1 helped, try 0.15). Combine two successful changes.
+
+**Priority 3 — Ablation studies:**
+After a successful experiment, try removing parts to find the minimum effective change.
+
+**Priority 4 — Diverse exploration:**
+Categorize past experiments by category (architecture / training / data / regularization). If 3+ consecutive experiments are in the same category, SWITCH categories. Try at least one "bold" idea every 5 experiments.
+
+### Anti-Patterns
+
+- Don't try the same idea with minor variations more than 3 times
+- Don't only do safe incremental changes — mix in risky ones
+- Don't ignore the literature review
+- Don't keep trying approaches in a category that consistently fails
+
+### Idea Refresh
+
+After every 5 experiments, refresh your idea pool:
+1. Review `results.tsv` — what patterns emerge? What's working?
+2. If you have web search: search for techniques related to your best result so far
+3. Update `.research/ideas.md` with new ideas
+4. Re-prioritize the backlog based on what you've learned
+
+### Web Search (Capability-Aware)
+
+If your tools include web search or URL fetching:
+- USE THEM during Phase 2 and every 5 experiments in Phase 5
+- Search queries should be specific and technical
+- Always include year filters (e.g., "2024 2025") for recency
+
+If you cannot search the web:
+- Rely on your training knowledge for related techniques
+- Focus on systematic design space exploration
+- Read any references mentioned in the repo's docs
 
 ### Experiment Timeout
 

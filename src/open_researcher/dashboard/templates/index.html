@@ -82,6 +82,8 @@
     <div>
         <div class="tabs">
             <div class="tab active" onclick="showDoc('project-understanding.md', this)">Project Understanding</div>
+            <div class="tab" onclick="showDoc('literature.md', this)">Literature</div>
+            <div class="tab" onclick="showDoc('ideas.md', this)">Ideas</div>
             <div class="tab" onclick="showDoc('evaluation.md', this)">Evaluation Design</div>
             <div class="tab" onclick="showDoc('program.md', this)">Program</div>
         </div>
@@ -89,7 +91,7 @@
     </div>
 
     <script>
-        const PHASE_NAMES = {1: 'Phase 1: Understand Project', 2: 'Phase 2: Design Evaluation', 3: 'Phase 3: Establish Baseline', 4: 'Phase 4: Experiment Loop'};
+        const PHASE_NAMES = {1: 'Phase 1: Understand Project', 2: 'Phase 2: Research Related Work', 3: 'Phase 3: Design Evaluation', 4: 'Phase 4: Establish Baseline', 5: 'Phase 5: Experiment Loop'};
         let chart = null;
 
         async function refresh() {
