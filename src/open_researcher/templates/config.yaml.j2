@@ -1,0 +1,27 @@
+# .research/config.yaml
+# Research configuration — edit this file to control agent behavior
+
+# Intervention mode
+# autonomous: agent runs freely, only pauses on crashes
+# collaborative: agent pauses after each phase for human review
+mode: autonomous
+
+# Experiment control
+experiment:
+  timeout: 600                  # seconds per experiment before kill
+  max_consecutive_crashes: 3    # pause after N consecutive crashes
+
+# Metrics (filled by agent in Phase 2)
+metrics:
+  primary:
+    name: ""                    # e.g. accuracy, val_loss, test_pass_rate
+    direction: ""               # higher_is_better | lower_is_better
+
+# Execution environment
+# Describe how to run commands for this project.
+# The agent reads this and follows your instructions.
+environment: |
+  # Examples:
+  # Local:  just run commands directly
+  # Remote: ssh user@host "cd /path && ..."
+  # Docker: docker exec container_name ...

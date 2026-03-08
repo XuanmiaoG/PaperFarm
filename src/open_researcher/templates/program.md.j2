@@ -1,0 +1,127 @@
+# Research Program
+
+> This file guides your AI agent through an automated research workflow.
+> Read it completely before starting. Follow each phase in order.
+
+## Configuration
+
+- **Mode:** Read `.research/config.yaml` → `mode` field
+  - `autonomous`: proceed without human confirmation after each phase
+  - `collaborative`: pause and ask human to confirm before advancing
+- **Environment:** Read `.research/config.yaml` → `environment` field for execution instructions
+- **Tag:** `{{ tag }}`
+- **Branch:** `research/{{ tag }}`
+
+---
+
+## Phase 1: Understand the Project
+
+**Goal:** Build a comprehensive understanding of this repository.
+
+**Instructions:**
+1. Read ALL source files, documentation, configs, and tests in this repo
+2. Identify:
+   - The project's purpose and core functionality
+   - Code structure and key modules/classes/functions
+   - Existing tests and evaluation mechanisms
+   - Dependencies and environment requirements
+   - Entry points (CLI commands, scripts, HTTP endpoints)
+3. Write your analysis to `.research/project-understanding.md` following the template there
+4. If `mode: collaborative` → stop and ask the human to review before continuing
+
+---
+
+## Phase 2: Design Evaluation
+
+**Goal:** Create a measurable evaluation system for experiments.
+
+**Instructions:**
+1. Based on your project understanding, design an evaluation system:
+   - **Primary metric**: one number that determines keep/discard (e.g. accuracy, loss, test_pass_rate, latency_ms)
+   - **Secondary metrics**: additional numbers for context (optional)
+   - **Evaluation method**: exact commands to run and how to extract the metric from output
+   - **Baseline method**: how to establish the initial baseline measurement
+2. Write the evaluation design to `.research/evaluation.md` following the template there
+3. Update `.research/config.yaml`:
+   - Set `metrics.primary.name` to your chosen metric name
+   - Set `metrics.primary.direction` to `higher_is_better` or `lower_is_better`
+4. If `mode: collaborative` → stop and ask the human to review before continuing
+
+---
+
+## Phase 3: Establish Baseline
+
+**Instructions:**
+1. Create the experiment branch:
+   ```bash
+   git checkout -b research/{{ tag }}
+   ```
+2. Run the evaluation method from `.research/evaluation.md` to get baseline metrics
+3. Record the baseline:
+   ```bash
+   python .research/scripts/record.py \
+       --metric <primary_metric_name> \
+       --value <measured_value> \
+       --secondary '{}' \
+       --status keep \
+       --desc "baseline"
+   ```
+4. Commit:
+   ```bash
+   git add .research/
+   git commit -m "research: establish baseline"
+   ```
+
+---
+
+## Phase 4: Experiment Loop
+
+**LOOP FOREVER:**
+
+1. **Review state**: Check `git status` and read `.research/results.tsv` to see past experiments
+2. **Propose experiment**: Think of an improvement to try. Consider:
+   - What has worked/failed in past experiments (results.tsv)
+   - Ideas from the codebase, papers, or domain knowledge
+   - Both incremental tweaks and bold architectural changes
+3. **Implement**: Make code changes
+4. **Commit**: `git add -A && git commit -m "exp: <brief description>"`
+5. **Run experiment**: Execute the evaluation command from `.research/evaluation.md`, redirect output:
+   ```bash
+   <evaluation_command> > .research/run.log 2>&1
+   ```
+6. **Extract results**: Parse `.research/run.log` for the primary metric
+7. **Handle crash**: If the experiment crashed (no metric output):
+   - Read last 50 lines of `.research/run.log` for the error
+   - Try to fix (up to 2 attempts)
+   - If unfixable, record as crash and rollback:
+     ```bash
+     python .research/scripts/record.py --metric <name> --value 0 --status crash --desc "<what failed>"
+     bash .research/scripts/rollback.sh
+     ```
+8. **Record result**:
+   ```bash
+   python .research/scripts/record.py \
+       --metric <name> --value <value> \
+       --secondary '<json>' \
+       --status <keep|discard> \
+       --desc "<what you tried>"
+   ```
+9. **Keep or discard**:
+   - **Improved** (better primary metric) → keep the commit, continue
+   - **Not improved** → rollback:
+     ```bash
+     bash .research/scripts/rollback.sh
+     ```
+10. **Continue**: Go to step 1. NEVER STOP unless the human interrupts.
+
+### Experiment Timeout
+
+If a single experiment takes longer than the `experiment.timeout` value in config.yaml (default: 600 seconds), kill it and treat as a crash.
+
+### Consecutive Crash Limit
+
+If experiments crash `max_consecutive_crashes` times in a row (default: 3), pause and reconsider your approach rather than continuing to crash.
+
+### Simplicity Principle
+
+All else equal, prefer simpler code. A tiny improvement requiring 20 ugly lines? Not worth it. A tiny improvement from deleting code? Absolutely keep it.
