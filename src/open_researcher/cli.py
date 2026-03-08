@@ -21,7 +21,8 @@ def init(tag: str = typer.Option(None, help="Experiment tag (e.g. mar8). Default
 @app.command()
 def status():
     """Show current research progress."""
-    typer.echo("status called")
+    from open_researcher.status_cmd import print_status
+    print_status(Path.cwd())
 
 
 @app.command()
