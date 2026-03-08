@@ -1,0 +1,5 @@
+timestamp	commit	primary_metric	metric_value	secondary_metrics	status	description
+2026-03-09T14:00:00Z	a1b2c3d	speedup_ratio	1.800000	{"memory_savings_pct": 15.2}	keep	baseline: current RMSNorm kernel
+2026-03-09T14:20:00Z	e4f5g6h	speedup_ratio	2.100000	{"memory_savings_pct": 18.5}	keep	improved tiling strategy for RMSNorm
+2026-03-09T14:40:00Z	i7j8k9l	speedup_ratio	1.600000	{"memory_savings_pct": 12.0}	discard	vectorized load (register pressure too high)
+2026-03-09T15:00:00Z	m0n1o2p	speedup_ratio	2.300000	{"memory_savings_pct": 22.1}	keep	fused elementwise + reduction pass

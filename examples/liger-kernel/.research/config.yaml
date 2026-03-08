@@ -1,0 +1,12 @@
+mode: autonomous
+experiment:
+  timeout: 900
+  max_consecutive_crashes: 3
+metrics:
+  primary:
+    name: speedup_ratio
+    direction: higher_is_better
+environment: |
+  Python 3.10+, PyTorch 2.0+, Triton
+  GPU required (CUDA)
+  Benchmark suite: built-in Liger-Kernel benchmarks
