@@ -3,12 +3,11 @@
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
+from open_researcher.agents import detect_agent, get_agent, list_agents
 from open_researcher.agents.base import AgentAdapter
-from open_researcher.agents import get_agent, list_agents, detect_agent
 
 
 class DummyAgent(AgentAdapter):

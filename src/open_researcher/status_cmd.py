@@ -2,7 +2,6 @@
 
 import csv
 import subprocess
-import sys
 from pathlib import Path
 
 import yaml

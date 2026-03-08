@@ -36,6 +36,7 @@ def results():
 def dashboard(port: int = typer.Option(8384, help="Dashboard port")):
     """Launch web dashboard."""
     import uvicorn
+
     from open_researcher.dashboard.app import create_app
     web_app = create_app(Path.cwd())
     typer.echo(f"Starting dashboard at http://localhost:{port}")
@@ -51,7 +52,7 @@ def export():
 
 @app.command()
 def run(
-    agent: str = typer.Option(None, help="Agent to use (claude-code, codex, aider, opencode). Auto-detects if omitted."),
+    agent: str = typer.Option(None, help="Agent to use (claude-code, codex, aider, opencode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show the command without executing."),
 ):
     """Launch an AI agent to run the research workflow."""

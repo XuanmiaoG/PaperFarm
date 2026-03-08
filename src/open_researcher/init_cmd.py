@@ -1,6 +1,5 @@
 """Implementation of the 'init' command."""
 
-import os
 import shutil
 import stat
 import sys
@@ -60,4 +59,4 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
 
     print(f"[OK] Initialized .research/ with tag '{tag}'")
     print(f"     Branch: research/{tag}")
-    print(f"     Next: point your AI agent at .research/program.md")
+    print("     Next: point your AI agent at .research/program.md")

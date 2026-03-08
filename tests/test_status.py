@@ -77,8 +77,10 @@ def test_print_status_english_output(capsys):
         repo = Path(tmp)
         research = repo / ".research"
         research.mkdir()
-        (research / "config.yaml").write_text("mode: autonomous\nmetrics:\n  primary:\n    name: accuracy\n    direction: higher_is_better\n")
-        (research / "results.tsv").write_text("timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n")
+        config = "mode: autonomous\nmetrics:\n  primary:\n    name: accuracy\n    direction: higher_is_better\n"
+        (research / "config.yaml").write_text(config)
+        header = "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+        (research / "results.tsv").write_text(header)
         (research / "project-understanding.md").write_text("<!-- placeholder -->\n")
         (research / "evaluation.md").write_text("<!-- placeholder -->\n")
         print_status(repo)

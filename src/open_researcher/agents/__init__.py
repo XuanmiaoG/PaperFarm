@@ -1,9 +1,6 @@
 """Agent adapter registry — discover, list, and instantiate agents."""
 
-import shutil
-
 from open_researcher.agents.base import AgentAdapter
-
 
 _REGISTRY: dict[str, type[AgentAdapter]] = {}
 
@@ -48,7 +45,9 @@ def _ensure_loaded():
     if _loaded:
         return
     _loaded = True
-    from open_researcher.agents import claude_code  # noqa: F401
-    from open_researcher.agents import codex  # noqa: F401
-    from open_researcher.agents import aider  # noqa: F401
-    from open_researcher.agents import opencode  # noqa: F401
+    from open_researcher.agents import (
+        aider,  # noqa: F401
+        claude_code,  # noqa: F401
+        codex,  # noqa: F401
+        opencode,  # noqa: F401
+    )

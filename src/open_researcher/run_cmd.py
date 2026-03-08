@@ -1,15 +1,12 @@
 """Run command — launch an AI agent to execute the research workflow."""
 
-import sys
 import threading
-import time
 from pathlib import Path
 
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.text import Text
 
 from open_researcher.agents import detect_agent, get_agent
 from open_researcher.status_cmd import parse_research_state
@@ -46,7 +43,10 @@ def _build_stats_panel(repo_path: Path) -> Panel:
         arrow = "\u2191" if direction == "higher_is_better" else "\u2193"
         lines.append(f"[bold]Primary Metric:[/bold] {pm} {arrow}")
         if state.get("baseline_value") is not None:
-            lines.append(f"  Baseline: {state['baseline_value']:.4f}   Current: {state.get('current_value', 0):.4f}   Best: {state.get('best_value', 0):.4f}")
+            bv = state["baseline_value"]
+            cv = state.get("current_value", 0)
+            best = state.get("best_value", 0)
+            lines.append(f"  Baseline: {bv:.4f}   Current: {cv:.4f}   Best: {best:.4f}")
 
         recent = state.get("recent", [])
         if recent:
@@ -54,7 +54,9 @@ def _build_stats_panel(repo_path: Path) -> Panel:
             for r in recent[-5:]:
                 st = r["status"]
                 color = {"keep": "green", "discard": "yellow", "crash": "red"}.get(st, "white")
-                lines.append(f"  [{color}][{st}][/{color}] {r['description']}  {r['primary_metric']}={r['metric_value']}")
+                desc = r["description"]
+                val = f"{r['primary_metric']}={r['metric_value']}"
+                lines.append(f"  [{color}][{st}][/{color}] {desc}  {val}")
     else:
         lines.append("[dim]No experiments yet -- agent is starting...[/dim]")
 

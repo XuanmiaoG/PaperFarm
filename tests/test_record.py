@@ -1,6 +1,5 @@
 # tests/test_record.py
 import csv
-import os
 import subprocess
 import sys
 import tempfile

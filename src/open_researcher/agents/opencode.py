@@ -24,7 +24,10 @@ class OpencodeAdapter(AgentAdapter):
     def run(self, workdir: Path, on_output: Callable[[str], None] | None = None) -> int:
         program_md = workdir / ".research" / "program.md"
         cmd = self.build_command(program_md, workdir)
-        proc = subprocess.Popen(cmd, cwd=str(workdir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        proc = subprocess.Popen(
+            cmd, cwd=str(workdir), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
         for line in proc.stdout:
             if on_output:
                 on_output(line.rstrip("\n"))
