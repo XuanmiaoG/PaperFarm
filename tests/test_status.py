@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from open_researcher.status_cmd import parse_research_state
+from open_researcher.status_cmd import parse_research_state, print_status
 
 
 def test_parse_state_with_results():
@@ -69,3 +69,22 @@ def test_parse_state_empty():
         state = parse_research_state(Path(tmpdir))
         assert state["total"] == 0
         assert state["phase"] == 1  # project understanding not filled
+
+
+def test_print_status_english_output(capsys):
+    """Verify status output uses English, not Chinese."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        research = repo / ".research"
+        research.mkdir()
+        (research / "config.yaml").write_text("mode: autonomous\nmetrics:\n  primary:\n    name: accuracy\n    direction: higher_is_better\n")
+        (research / "results.tsv").write_text("timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n")
+        (research / "project-understanding.md").write_text("<!-- placeholder -->\n")
+        (research / "evaluation.md").write_text("<!-- placeholder -->\n")
+        print_status(repo)
+        captured = capsys.readouterr()
+        assert "Phase 1" in captured.out
+        assert "阶段" not in captured.out
+        assert "分支" not in captured.out
+        assert "模式" not in captured.out
+        assert "实验统计" not in captured.out

@@ -104,10 +104,10 @@ def parse_research_state(repo_path: Path) -> dict:
 
 
 PHASE_NAMES = {
-    1: "理解项目 (Phase 1)",
-    2: "设计评估 (Phase 2)",
-    3: "建立基线 (Phase 3)",
-    4: "实验循环 (Phase 4)",
+    1: "Phase 1: Understand Project",
+    2: "Phase 2: Design Evaluation",
+    3: "Phase 3: Establish Baseline",
+    4: "Phase 4: Experiment Loop",
 }
 
 
@@ -122,15 +122,15 @@ def print_status(repo_path: Path) -> None:
     console = Console()
 
     lines = []
-    lines.append(f"  阶段: {PHASE_NAMES.get(state['phase'], 'unknown')}")
-    lines.append(f"  分支: {state['branch']}")
-    lines.append(f"  模式: {state['mode']}")
+    lines.append(f"  Phase: {PHASE_NAMES.get(state['phase'], 'unknown')}")
+    lines.append(f"  Branch: {state['branch']}")
+    lines.append(f"  Mode: {state['mode']}")
     lines.append("")
 
     if state["total"] > 0:
-        lines.append("  实验统计:")
+        lines.append("  Experiments:")
         lines.append(
-            f"    总数: {state['total']}  "
+            f"    Total: {state['total']}  "
             f"✓ keep: {state['keep']}  "
             f"✗ discard: {state['discard']}  "
             f"💥 crash: {state['crash']}"
@@ -138,21 +138,21 @@ def print_status(repo_path: Path) -> None:
         lines.append("")
 
         if state["primary_metric"]:
-            lines.append(f"  主要指标: {state['primary_metric']}")
+            lines.append(f"  Primary Metric: {state['primary_metric']}")
             if state["baseline_value"] is not None:
-                lines.append(f"    基线:  {state['baseline_value']:.4f}")
-                lines.append(f"    当前:  {state['current_value']:.4f}")
-                lines.append(f"    最佳:  {state['best_value']:.4f}")
+                lines.append(f"    Baseline:  {state['baseline_value']:.4f}")
+                lines.append(f"    Current:  {state['current_value']:.4f}")
+                lines.append(f"    Best:  {state['best_value']:.4f}")
             lines.append("")
 
-        lines.append(f"  最近 {len(state['recent'])} 次实验:")
+        lines.append(f"  Recent {len(state['recent'])} experiments:")
         status_icons = {"keep": "✓", "discard": "✗", "crash": "💥"}
         for r in reversed(state["recent"]):
             icon = status_icons.get(r["status"], "?")
             val = float(r["metric_value"])
             lines.append(f"    {icon} {val:.4f}  {r['description']}")
     else:
-        lines.append("  尚无实验记录")
+        lines.append("  No experiments yet")
 
     panel = Panel(
         "\n".join(lines),
