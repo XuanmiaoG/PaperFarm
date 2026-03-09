@@ -1,5 +1,7 @@
 """Tests for activity monitor."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pytest
 
 from open_researcher.activity import ActivityMonitor
@@ -55,8 +57,8 @@ def test_update_worker(tmp_path):
     from open_researcher.activity import ActivityMonitor
 
     am = ActivityMonitor(tmp_path)
-    am.update_worker("experiment_master", "w-001", status="coding", idea="idea-001", gpus=[0])
-    data = am.get("experiment_master")
+    am.update_worker("experiment_agent", "w-001", status="coding", idea="idea-001", gpus=[0])
+    data = am.get("experiment_agent")
     assert "workers" in data
     assert len(data["workers"]) == 1
     assert data["workers"][0]["id"] == "w-001"
@@ -67,9 +69,9 @@ def test_update_worker_multiple(tmp_path):
     from open_researcher.activity import ActivityMonitor
 
     am = ActivityMonitor(tmp_path)
-    am.update_worker("experiment_master", "w-001", status="coding", idea="idea-001", gpus=[0])
-    am.update_worker("experiment_master", "w-002", status="evaluating", idea="idea-002", gpus=[1, 2])
-    data = am.get("experiment_master")
+    am.update_worker("experiment_agent", "w-001", status="coding", idea="idea-001", gpus=[0])
+    am.update_worker("experiment_agent", "w-002", status="evaluating", idea="idea-002", gpus=[1, 2])
+    data = am.get("experiment_agent")
     assert len(data["workers"]) == 2
 
 
@@ -77,7 +79,28 @@ def test_remove_worker(tmp_path):
     from open_researcher.activity import ActivityMonitor
 
     am = ActivityMonitor(tmp_path)
-    am.update_worker("experiment_master", "w-001", status="coding", idea="idea-001", gpus=[0])
-    am.remove_worker("experiment_master", "w-001")
-    data = am.get("experiment_master")
+    am.update_worker("experiment_agent", "w-001", status="coding", idea="idea-001", gpus=[0])
+    am.remove_worker("experiment_agent", "w-001")
+    data = am.get("experiment_agent")
     assert len(data["workers"]) == 0
+
+
+def test_concurrent_updates(tmp_path):
+    """10 threads updating different keys — verify all 10 keys present."""
+    am = ActivityMonitor(tmp_path)
+
+    def do_update(i):
+        am.update(f"agent_{i}", status=f"status_{i}", detail=f"detail_{i}")
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(do_update, i) for i in range(10)]
+        for f in as_completed(futures):
+            f.result()  # raise any exceptions
+
+    all_data = am.get_all()
+    assert len(all_data) == 10
+    for i in range(10):
+        key = f"agent_{i}"
+        assert key in all_data
+        assert all_data[key]["status"] == f"status_{i}"
+        assert all_data[key]["detail"] == f"detail_{i}"

@@ -1,6 +1,7 @@
 """Tests for idea pool file manager."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
@@ -108,3 +109,43 @@ def test_claim_idea_atomic(pool):
 def test_claim_idea_none_available(pool):
     result = pool.claim_idea(worker_id="w-001")
     assert result is None
+
+
+def test_concurrent_adds(pool_file):
+    """20 threads adding ideas concurrently — verify all 20 exist."""
+    pool = IdeaPool(pool_file)
+
+    def add_idea(i):
+        return pool.add(f"concurrent idea {i}", priority=i)
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(add_idea, i) for i in range(20)]
+        results = [f.result() for f in as_completed(futures)]
+
+    assert len(results) == 20
+    all_ideas = pool.all_ideas()
+    assert len(all_ideas) == 20
+    # All IDs should be unique
+    ids = [idea["id"] for idea in all_ideas]
+    assert len(set(ids)) == 20
+
+
+def test_concurrent_claim(pool_file):
+    """5 threads claiming from 5 ideas — verify no duplicates."""
+    pool = IdeaPool(pool_file)
+    for i in range(5):
+        pool.add(f"claimable idea {i}", priority=i + 1)
+
+    def claim(worker_idx):
+        return pool.claim_idea(worker_id=f"w-{worker_idx:03d}")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(claim, i) for i in range(5)]
+        results = [f.result() for f in as_completed(futures)]
+
+    # All 5 should be claimed (no None results)
+    claimed = [r for r in results if r is not None]
+    assert len(claimed) == 5
+    # No duplicate IDs
+    claimed_ids = [r["id"] for r in claimed]
+    assert len(set(claimed_ids)) == 5

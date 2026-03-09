@@ -1,9 +1,10 @@
 """Idea pool file manager with file locking for concurrent access."""
 
-import fcntl
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+from filelock import FileLock
 
 
 class IdeaPool:
@@ -11,6 +12,7 @@ class IdeaPool:
 
     def __init__(self, path: Path):
         self.path = path
+        self._lock = FileLock(str(path) + ".lock")
 
     def _read(self) -> dict:
         if not self.path.exists():
@@ -21,16 +23,7 @@ class IdeaPool:
             return {"ideas": []}
 
     def _write(self, data: dict) -> None:
-        mode = "r+" if self.path.exists() else "w"
-        with open(self.path, mode) as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.seek(0)
-                f.truncate()
-                json.dump(data, f, indent=2)
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        self.path.write_text(json.dumps(data, indent=2))
 
     def _next_id(self, data: dict) -> str:
         existing = [i["id"] for i in data["ideas"]]
@@ -41,24 +34,11 @@ class IdeaPool:
 
     def _atomic_update(self, updater) -> dict:
         """Lock file, read, apply updater function, write back, return data."""
-        mode = "r+" if self.path.exists() else "w"
-        if mode == "w":
-            # Create file with empty structure first
-            self.path.write_text(json.dumps({"ideas": []}, indent=2))
-            mode = "r+"
-        with open(self.path, mode) as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                content = f.read()
-                data = json.loads(content) if content.strip() else {"ideas": []}
-                result = updater(data)
-                f.seek(0)
-                f.truncate()
-                json.dump(data, f, indent=2)
-                f.flush()
-                return result
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        with self._lock:
+            data = self._read()
+            result = updater(data)
+            self._write(data)
+            return result
 
     def add(
         self,
@@ -88,26 +68,20 @@ class IdeaPool:
 
     def claim_idea(self, worker_id: str) -> dict | None:
         """Atomically claim the highest-priority pending idea for a worker."""
-        with open(self.path, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                data = json.loads(f.read())
-                pending = [i for i in data["ideas"] if i["status"] == "pending"]
-                pending.sort(key=lambda x: x["priority"])
-                if not pending:
-                    return None
-                target = pending[0]
-                for idea in data["ideas"]:
-                    if idea["id"] == target["id"]:
-                        idea["status"] = "running"
-                        idea["claimed_by"] = worker_id
-                        break
-                f.seek(0)
-                f.truncate()
-                json.dump(data, f, indent=2)
-                return target
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        with self._lock:
+            data = self._read()
+            pending = [i for i in data["ideas"] if i["status"] == "pending"]
+            pending.sort(key=lambda x: x["priority"])
+            if not pending:
+                return None
+            target = pending[0]
+            for idea in data["ideas"]:
+                if idea["id"] == target["id"]:
+                    idea["status"] = "running"
+                    idea["claimed_by"] = worker_id
+                    break
+            self._write(data)
+            return target
 
     def list_by_status(self, status: str) -> list[dict]:
         data = self._read()

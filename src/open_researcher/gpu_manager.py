@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from filelock import FileLock
+
 
 class GPUManager:
     """Manage GPU allocation across local and remote hosts."""
@@ -11,6 +13,7 @@ class GPUManager:
     def __init__(self, status_file: Path, remote_hosts: list[dict] | None = None):
         self.status_file = status_file
         self.remote_hosts = remote_hosts or []
+        self._lock = FileLock(str(status_file) + ".lock")
 
     def _read(self) -> dict:
         if self.status_file.exists():
@@ -74,50 +77,65 @@ class GPUManager:
                 all_gpus.extend(self.detect_remote(rh["host"], rh["user"]))
             except (subprocess.TimeoutExpired, OSError):
                 continue
-        old = self._read()
-        old_alloc = {(g["host"], g["device"]): g.get("allocated_to") for g in old["gpus"]}
-        for g in all_gpus:
-            key = (g["host"], g["device"])
-            if key in old_alloc:
-                g["allocated_to"] = old_alloc[key]
-        data = {"gpus": all_gpus}
-        self._write(data)
+        with self._lock:
+            old = self._read()
+            old_alloc = {(g["host"], g["device"]): g.get("allocated_to") for g in old["gpus"]}
+            for g in all_gpus:
+                key = (g["host"], g["device"])
+                if key in old_alloc:
+                    g["allocated_to"] = old_alloc[key]
+            data = {"gpus": all_gpus}
+            self._write(data)
         return all_gpus
 
     def allocate(self, tag: str | None = None) -> tuple[str, int] | None:
         gpus = self.refresh()
-        free_gpus = [g for g in gpus if g["allocated_to"] is None]
-        if not free_gpus:
-            return None
-        best = max(free_gpus, key=lambda g: g["memory_free"])
-        best["allocated_to"] = tag
-        self._write({"gpus": gpus})
-        return (best["host"], best["device"])
+        with self._lock:
+            # Re-read after refresh to get consistent state under lock
+            data = self._read()
+            gpus = data["gpus"]
+            free_gpus = [g for g in gpus if g["allocated_to"] is None]
+            if not free_gpus:
+                return None
+            best = max(free_gpus, key=lambda g: g["memory_free"])
+            best["allocated_to"] = tag
+            self._write({"gpus": gpus})
+            return (best["host"], best["device"])
 
     def release(self, host: str, device: int) -> None:
-        data = self._read()
-        for g in data["gpus"]:
-            if g["host"] == host and g["device"] == device:
-                g["allocated_to"] = None
-        self._write(data)
+        with self._lock:
+            data = self._read()
+            for g in data["gpus"]:
+                if g["host"] == host and g["device"] == device:
+                    g["allocated_to"] = None
+            self._write(data)
 
     def allocate_group(self, count: int = 1, tag: str | None = None) -> list[tuple[str, int]] | None:
         """Allocate a group of N GPUs sorted by most free memory. Returns None if not enough."""
         gpus = self.refresh()
-        free_gpus = [g for g in gpus if g["allocated_to"] is None]
-        if len(free_gpus) < count:
-            return None
-        free_gpus.sort(key=lambda g: g["memory_free"], reverse=True)
-        selected = free_gpus[:count]
-        for g in selected:
-            g["allocated_to"] = tag
-        self._write({"gpus": gpus})
-        return [(g["host"], g["device"]) for g in selected]
+        with self._lock:
+            # Re-read after refresh to get consistent state under lock
+            data = self._read()
+            gpus = data["gpus"]
+            free_gpus = [g for g in gpus if g["allocated_to"] is None]
+            if len(free_gpus) < count:
+                return None
+            free_gpus.sort(key=lambda g: g["memory_free"], reverse=True)
+            selected = free_gpus[:count]
+            for g in selected:
+                g["allocated_to"] = tag
+            self._write({"gpus": gpus})
+            return [(g["host"], g["device"]) for g in selected]
 
     def release_group(self, gpu_list: list[tuple[str, int]]) -> None:
         """Release a group of GPUs."""
-        for host, device in gpu_list:
-            self.release(host, device)
+        with self._lock:
+            data = self._read()
+            release_set = set(gpu_list)
+            for g in data["gpus"]:
+                if (g["host"], g["device"]) in release_set:
+                    g["allocated_to"] = None
+            self._write(data)
 
     def status(self) -> list[dict]:
         return self._read()["gpus"]

@@ -1,6 +1,7 @@
 """Tests for GPU manager."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -122,3 +123,41 @@ def test_release_group(mgr, gpu_file):
     data = json.loads(gpu_file.read_text())
     for g in data["gpus"]:
         assert g["allocated_to"] is None
+
+
+def test_concurrent_allocate_release(gpu_file):
+    """Multiple threads allocating and releasing GPUs concurrently."""
+    mgr = GPUManager(gpu_file)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=NVIDIA_SMI_4GPU)
+
+        # Allocate all 4 GPUs with different tags
+        def allocate_one(i):
+            return mgr.allocate(tag=f"exp-{i}")
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(allocate_one, i) for i in range(4)]
+            results = [f.result() for f in as_completed(futures)]
+
+        # All 4 should be allocated (no None)
+        allocated = [r for r in results if r is not None]
+        assert len(allocated) == 4
+
+        # All device indices should be unique
+        devices = [(h, d) for h, d in allocated]
+        assert len(set(devices)) == 4
+
+        # Now release all concurrently
+        def release_one(gpu_tuple):
+            mgr.release(gpu_tuple[0], gpu_tuple[1])
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(release_one, g) for g in allocated]
+            for f in as_completed(futures):
+                f.result()
+
+        # All should be released
+        data = json.loads(gpu_file.read_text())
+        for g in data["gpus"]:
+            assert g["allocated_to"] is None
