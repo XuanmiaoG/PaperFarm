@@ -32,25 +32,27 @@ Valid statuses: `analyzing`, `generating`, `searching`, `idle`
 2. Fill `.research/literature.md`
 3. Update status: `{"status": "searching", "detail": "searching related work"}`
 
-## Phase 3: Generate Initial Ideas
+## Phase 3: Generate ONE Idea
 
-1. Based on project understanding and literature, generate 5-10 initial ideas
-2. Write each idea to `.research/idea_pool.json` using this format:
+1. Read `.research/idea_pool.json` to see existing ideas and `.research/results.tsv` to see past experiment results
+2. Based on project understanding, literature, and past results, generate **exactly 1** new idea
+   - If past results exist, analyze what worked/didn't work and generate an idea that builds on successful approaches
+   - If no past results exist, pick the single highest-impact, most-feasible idea
+3. **Append** (do not overwrite) the idea to `.research/idea_pool.json`:
 ```json
-{"ideas": [{"id": "idea-001", "description": "...", "source": "literature|original", "category": "...", "priority": 1, "status": "pending", "assigned_experiment": null, "result": null, "created_at": "..."}]}
+{"id": "idea-NNN", "description": "...", "source": "literature|original", "category": "...", "priority": 1, "status": "pending", "assigned_experiment": null, "result": null, "created_at": "..."}
 ```
-3. Prioritize by (expected impact) x (inverse complexity)
 4. Categories: architecture, training, data, regularization, infrastructure
-5. Update status: `{"status": "generating", "detail": "creating initial idea pool"}`
+5. Update status: `{"status": "generating", "detail": "created 1 new idea"}`
 
 ## Phase 4: Done
 
-After generating initial ideas, update status to idle and **exit**:
+After generating the idea, update status to idle and **exit immediately**:
 ```json
-{"idea_agent": {"status": "idle", "detail": "initial ideas generated, waiting for experiment results", "updated_at": "<ISO>"}}
+{"idea_agent": {"status": "idle", "detail": "idea generated, handing off to experiment agent", "updated_at": "<ISO>"}}
 ```
 
-The Experiment Agent will now take over to run experiments. You will be restarted later to analyze results and generate new ideas.
+The Experiment Agent will now run the experiment. You will be restarted afterward to analyze results and generate the next idea.
 
 ## Rules
 

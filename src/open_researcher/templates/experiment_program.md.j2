@@ -19,7 +19,7 @@ You are the **Experiment Agent**. You pick ideas from the pool and run experimen
 |------|--------|---------|
 | `.research/experiment_progress.json` | Read/Write | **Your resume state — update after each phase** |
 | `.research/idea_pool.json` | Read/Write | Claim ideas, update results |
-| `.research/activity.json` | Read/Write | Update `experiment_master` status |
+| `.research/activity.json` | Read/Write | Update `experiment_agent` status |
 | `.research/results.tsv` | Write | Record via `.research/scripts/record.py` |
 | `.research/config.yaml` | Read | Experiment settings |
 | `.research/evaluation.md` | Read/Write | Evaluation procedure (fill once in Phase 1) |
@@ -29,7 +29,7 @@ You are the **Experiment Agent**. You pick ideas from the pool and run experimen
 
 Before each action, update `.research/activity.json`:
 ```json
-{"experiment_master": {"status": "<phase>", "detail": "<what>", "idea": "<id>", "updated_at": "<ISO>"}}
+{"experiment_agent": {"status": "<phase>", "detail": "<what>", "idea": "<id>", "updated_at": "<ISO>"}}
 ```
 
 ## Phase 1: Setup (only if progress.phase == "init")

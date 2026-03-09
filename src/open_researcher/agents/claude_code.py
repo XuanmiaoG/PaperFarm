@@ -1,8 +1,5 @@
 """Claude Code agent adapter."""
 
-import os
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -14,12 +11,6 @@ from open_researcher.agents.base import AgentAdapter
 class ClaudeCodeAdapter(AgentAdapter):
     name = "claude-code"
     command = "claude"
-
-    def __init__(self):
-        self._proc: subprocess.Popen | None = None
-
-    def check_installed(self) -> bool:
-        return shutil.which(self.command) is not None
 
     def build_command(self, program_md: Path, workdir: Path) -> list[str]:
         return [self.command, "-p", "<prompt>", "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep"]
@@ -33,26 +24,4 @@ class ClaudeCodeAdapter(AgentAdapter):
         program_md = workdir / ".research" / program_file
         prompt = program_md.read_text()
         cmd = [self.command, "-p", prompt, "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep"]
-
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(workdir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            start_new_session=True,
-        )
-        self._proc = proc
-        for line in proc.stdout:
-            if on_output:
-                on_output(line.rstrip("\n"))
-        return proc.wait()
-
-    def terminate(self) -> None:
-        """Terminate the running agent subprocess."""
-        if self._proc and self._proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._proc.pid), 15)  # SIGTERM to process group
-            except (OSError, ProcessLookupError):
-                pass
+        return self._run_process(cmd, workdir, on_output)

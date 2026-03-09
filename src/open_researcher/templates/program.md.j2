@@ -125,11 +125,12 @@
 4. **Commit**: `git add -A && git commit -m "exp: <brief description>"`
 5. **Run experiment**: Execute the evaluation command from `.research/evaluation.md`, redirect output:
    ```bash
-   <evaluation_command> > .research/run.log 2>&1
+   <evaluation_command> > .research/eval_output.log 2>&1
    ```
-6. **Extract results**: Parse `.research/run.log` for the primary metric
+   **IMPORTANT**: Do NOT redirect to `.research/run.log` — that file is used by the TUI for agent output streaming.
+6. **Extract results**: Parse `.research/eval_output.log` for the primary metric
 7. **Handle crash**: If the experiment crashed (no metric output):
-   - Read last 50 lines of `.research/run.log` for the error
+   - Read last 50 lines of `.research/eval_output.log` for the error
    - Try to fix (up to 2 attempts)
    - If unfixable, record as crash and rollback:
      ```bash
