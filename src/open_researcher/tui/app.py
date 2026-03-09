@@ -4,9 +4,8 @@ import json
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import RichLog, Static
+from textual.widgets import RichLog
 
 from open_researcher.activity import ActivityMonitor
 from open_researcher.idea_pool import IdeaPool
@@ -15,9 +14,8 @@ from open_researcher.tui.modals import AddIdeaModal, GPUStatusModal, LogScreen
 from open_researcher.tui.widgets import (
     AgentStatusWidget,
     HotkeyBar,
-    IdeaPoolPanel,
+    IdeaPoolTable,
     StatsBar,
-    WorkerStatusPanel,
 )
 
 
@@ -47,16 +45,9 @@ class ResearchApp(App):
 
     def compose(self) -> ComposeResult:
         yield StatsBar(id="stats-bar")
-        yield IdeaPoolPanel(id="idea-pool")
-        with Horizontal(id="agent-panels"):
-            with Vertical(id="idea-agent-section"):
-                yield Static("Idea Agent", classes="panel-title")
-                yield AgentStatusWidget(id="idea-status")
-                yield RichLog(id="idea-log", wrap=True, markup=False)
-            with Vertical(id="exp-agent-section"):
-                yield Static("Experiment Master", classes="panel-title")
-                yield WorkerStatusPanel(id="worker-status")
-                yield RichLog(id="exp-log", wrap=True, markup=False)
+        yield IdeaPoolTable(id="idea-pool")
+        yield AgentStatusWidget(id="agent-status")
+        yield RichLog(id="agent-log", wrap=True, markup=False)
         yield HotkeyBar(id="hotkey-bar")
 
     def on_mount(self) -> None:
@@ -74,30 +65,24 @@ class ResearchApp(App):
         except (json.JSONDecodeError, OSError, KeyError, NoMatches):
             pass
 
-        # Refresh idea pool with worker GPU info
+        # Refresh idea pool
         try:
             ideas = self.pool.all_ideas()
             summary = self.pool.summary()
-            exp_master = self.activity.get("experiment_master")
-            workers = exp_master.get("workers", []) if exp_master else []
-            self.query_one("#idea-pool", IdeaPoolPanel).update_ideas(ideas, summary, workers)
+            self.query_one("#idea-pool", IdeaPoolTable).update_ideas(ideas, summary)
         except (json.JSONDecodeError, OSError, KeyError, NoMatches):
             pass
 
-        # Refresh idea agent status
+        # Refresh agent status (show experiment when active, else idea agent)
         try:
+            exp_act = self.activity.get("experiment_master")
             idea_act = self.activity.get("idea_agent")
-            self.query_one("#idea-status", AgentStatusWidget).update_status(idea_act)
-        except (json.JSONDecodeError, OSError, KeyError, NoMatches):
-            pass
-
-        # Refresh worker status panel
-        try:
-            exp_master = self.activity.get("experiment_master")
-            if exp_master:
-                workers = exp_master.get("workers", [])
-                gpu_total = exp_master.get("gpu_total", 0)
-                self.query_one("#worker-status", WorkerStatusPanel).update_workers(workers, gpu_total)
+            active = (
+                exp_act
+                if exp_act and exp_act.get("status") not in (None, "idle")
+                else idea_act
+            )
+            self.query_one("#agent-status", AgentStatusWidget).update_status(active)
         except (json.JSONDecodeError, OSError, KeyError, NoMatches):
             pass
 
@@ -156,32 +141,22 @@ class ResearchApp(App):
         self.push_screen(GPUStatusModal(gpus))
 
     def action_view_log(self) -> None:
-        if self.multi:
-            # In multi mode, show both logs concatenated
-            log_path = str(self.research_dir / "experiment_agent.log")
-        else:
-            log_path = str(self.research_dir / "run.log")
+        log_path = str(self.research_dir / "run.log")
         self.push_screen(LogScreen(log_path))
 
     def action_quit_app(self) -> None:
         self.exit()
 
-    def append_idea_log(self, line: str) -> None:
-        """Thread-safe: append a line to the Idea Agent log panel."""
-        self.call_from_thread(self._do_append_idea_log, line)
+    def append_log(self, line: str) -> None:
+        """Thread-safe: append a line to the unified log panel."""
+        self.call_from_thread(self._do_append_log, line)
 
-    def _do_append_idea_log(self, line: str) -> None:
+    def _do_append_log(self, line: str) -> None:
         try:
-            self.query_one("#idea-log", RichLog).write(line)
+            self.query_one("#agent-log", RichLog).write(line)
         except NoMatches:
             pass
 
-    def append_exp_log(self, line: str) -> None:
-        """Thread-safe: append a line to the Experiment Master log panel."""
-        self.call_from_thread(self._do_append_exp_log, line)
-
-    def _do_append_exp_log(self, line: str) -> None:
-        try:
-            self.query_one("#exp-log", RichLog).write(line)
-        except NoMatches:
-            pass
+    # Keep old names as aliases for backward compatibility
+    append_idea_log = append_log
+    append_exp_log = append_log

@@ -273,8 +273,8 @@ def do_run_multi(
     exit_codes: dict[str, int] = {}
 
     def start_threads():
-        on_idea_output = _make_safe_output(app.append_idea_log, research / "idea_agent.log")
-        on_exp_output = _make_safe_output(app.append_exp_log, research / "experiment_agent.log")
+        on_idea_output = _make_safe_output(app.append_log, research / "run.log")
+        on_exp_output = _make_safe_output(app.append_log, research / "run.log")
 
         _launch_agent_thread(
             idea_agent,

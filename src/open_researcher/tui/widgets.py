@@ -1,8 +1,7 @@
 """Custom Textual widgets for Open Researcher TUI."""
 
 from textual.reactive import reactive
-from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import DataTable, Static
 
 
 class StatsBar(Static):
@@ -33,104 +32,40 @@ class StatsBar(Static):
         self.stats = " | ".join(parts)
 
 
-class IdeaPoolPanel(Widget):
-    """Scrollable panel showing all ideas in the pool."""
+class IdeaPoolTable(Static):
+    """Scrollable DataTable showing all ideas in the pool."""
 
-    ideas_text = reactive("")
+    def compose(self):
+        yield DataTable(id="idea-table")
 
-    def render(self) -> str:
-        return self.ideas_text or "No ideas yet — Idea Agent is starting..."
+    def on_mount(self):
+        table = self.query_one("#idea-table", DataTable)
+        table.add_columns("ID", "Description", "Status", "Pri", "Result")
+        table.cursor_type = "row"
 
-    def update_ideas(self, ideas: list[dict], summary: dict, workers: list[dict] | None = None) -> None:
-        pending = summary.get("pending", 0)
-        total = summary.get("total", 0)
-        lines = [f"Idea Pool ({pending} pending / {total} total)"]
-        lines.append("-" * 60)
-
-        # Build worker lookup: idea_id -> gpu list
-        worker_gpu_map: dict[str, list[int]] = {}
-        if workers:
-            for w in workers:
-                idea = w.get("idea", "")
-                gpus = w.get("gpus", [])
-                worker_gpu_map[idea] = gpus
-
+    def update_ideas(self, ideas: list[dict], summary: dict) -> None:
+        table = self.query_one("#idea-table", DataTable)
+        table.clear()
         status_order = {"running": 0, "pending": 1, "done": 2, "skipped": 3}
-        sorted_ideas = sorted(ideas, key=lambda i: (status_order.get(i["status"], 9), i.get("priority", 99)))
-
+        sorted_ideas = sorted(
+            ideas,
+            key=lambda i: (status_order.get(i["status"], 9), i.get("priority", 99)),
+        )
         for idea in sorted_ideas:
             sid = idea["status"]
-            desc = idea["description"][:45]
             iid = idea["id"].replace("idea-", "#")
-
-            if sid == "running":
-                gpus = worker_gpu_map.get(idea["id"], [])
-                gpu_str = f" GPU:{','.join(str(g) for g in gpus)}" if gpus else ""
-                hint = idea.get("gpu_hint", "auto")
-                ddp = " DDP" if isinstance(hint, int) and hint > 1 else ""
-                lines.append(f">> {iid} {desc:<45} [RUNNING{gpu_str}{ddp}]")
-            elif sid == "pending":
-                pri = idea.get("priority", "?")
-                lines.append(f"   {iid} {desc:<45} [pending]  pri:{pri}")
-            elif sid == "done":
-                result = idea.get("result", {})
-                verdict = result.get("verdict", "?") if result else "?"
-                val = result.get("metric_value", 0) if result else 0
-                marker = "--" if verdict == "kept" else "xx"
-                lines.append(f"{marker} {iid} {desc:<45} [{verdict} {val:.4f}]")
-            elif sid == "skipped":
-                lines.append(f"~~ {iid} {desc:<45} [skipped]")
-
-        self.ideas_text = "\n".join(lines)
+            desc = idea["description"][:80]
+            pri = str(idea.get("priority", ""))
+            result = idea.get("result")
+            if result and result.get("metric_value"):
+                val = f"{result['metric_value']:.4f}"
+            else:
+                val = ""
+            status_display = sid.upper() if sid == "running" else sid
+            table.add_row(iid, desc, status_display, pri, val)
 
 
-class AgentPanel(Widget):
-    """Panel showing a single agent's status and recent output."""
-
-    agent_text = reactive("")
-
-    def render(self) -> str:
-        return self.agent_text or "[idle]"
-
-    def update_from_activity(self, activity: dict | None, agent_name: str, log_lines: list[str] | None = None) -> None:
-        lines = [f"{agent_name}"]
-        lines.append("-" * 30)
-
-        if activity:
-            status = activity.get("status", "idle")
-            lines.append(f"[{status}]")
-
-            detail = activity.get("detail", "")
-            if detail:
-                lines.append(detail)
-
-            idea = activity.get("idea", "")
-            if idea:
-                lines.append(f"Idea: {idea}")
-
-            gpu = activity.get("gpu")
-            if gpu:
-                lines.append(f"GPU: {gpu.get('host', '?')}:{gpu.get('device', '?')}")
-
-            branch = activity.get("branch", "")
-            if branch:
-                lines.append(f"Branch: {branch}")
-
-            started = activity.get("started_at", "")
-            if started:
-                lines.append(f"Started: {started[:19]}")
-        else:
-            lines.append("[idle] waiting to start...")
-
-        if log_lines:
-            lines.append("")
-            for line in log_lines[-5:]:
-                lines.append(f"> {line[:70]}")
-
-        self.agent_text = "\n".join(lines)
-
-
-class AgentStatusWidget(Widget):
+class AgentStatusWidget(Static):
     """Prominent display of agent's current phase and action."""
 
     status_text = reactive("  -- [IDLE] waiting to start...")
@@ -174,33 +109,6 @@ class AgentStatusWidget(Widget):
             lines.append(f"     Updated: {updated}")
 
         self.status_text = "\n".join(lines)
-
-
-class WorkerStatusPanel(Widget):
-    """Panel showing experiment workers and their GPU assignments."""
-
-    workers_text = reactive("Experiment Master -- waiting for ideas...")
-
-    def render(self) -> str:
-        return self.workers_text
-
-    def update_workers(self, workers: list[dict], gpu_total: int = 0) -> None:
-        if not workers:
-            active_gpus = 0
-        else:
-            active_gpus = sum(len(w.get("gpus", [])) for w in workers)
-        lines = [f"Experiment Master | Workers: {len(workers)} | GPU: {active_gpus}/{gpu_total} active"]
-        lines.append("-" * 60)
-        if not workers:
-            lines.append("No workers running — waiting for ideas...")
-        for w in workers:
-            wid = w.get("id", "?")
-            idea = w.get("idea", "?")
-            gpus = w.get("gpus", [])
-            gpu_str = ",".join(str(g) for g in gpus)
-            status = w.get("status", "?")
-            lines.append(f"  {wid}: {idea} [GPU:{gpu_str}] [{status}]")
-        self.workers_text = "\n".join(lines)
 
 
 class HotkeyBar(Static):

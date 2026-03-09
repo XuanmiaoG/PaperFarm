@@ -14,38 +14,17 @@ Screen {
     height: auto;
     max-height: 12;
     border: solid $primary;
-    padding: 0 1;
 }
 
-#agent-panels {
-    height: 1fr;
-    layout: horizontal;
-}
-
-#idea-agent-section {
-    width: 1fr;
-}
-
-#exp-agent-section {
-    width: 1fr;
-}
-
-.panel-title {
-    height: 1;
-    background: $primary-background;
-    color: $text;
-    padding: 0 1;
-}
-
-#idea-status, #worker-status {
-    min-height: 3;
+#agent-status {
+    min-height: 2;
     height: auto;
-    max-height: 8;
+    max-height: 5;
     border-bottom: solid $accent;
     padding: 0 1;
 }
 
-#idea-log, #exp-log {
+#agent-log {
     height: 1fr;
     border: solid $primary;
 }

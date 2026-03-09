@@ -102,37 +102,16 @@ def test_init_creates_shared_files(tmp_path):
     assert (research / "experiment_program.md").exists()
 
 
-def test_worker_prompt_template_renders():
-    from jinja2 import Environment, PackageLoader
-
-    env = Environment(loader=PackageLoader("open_researcher", "templates"))
-    tmpl = env.get_template("worker_prompt.md.j2")
-    result = tmpl.render(
-        idea_id="idea-003",
-        idea_description="Use cosine annealing with warmup",
-        gpu_devices="0,1",
-        gpu_count=2,
-        worktree_path="/tmp/worktree-003",
-        evaluation_content="# Eval\nRun train.py",
-        config_content="mode: autonomous",
-        tag="demo",
-    )
-    assert "idea-003" in result
-    assert "cosine annealing" in result
-    assert "CUDA_VISIBLE_DEVICES=0,1" in result
-    assert "torchrun" in result
-
-
-def test_experiment_program_master_mode():
+def test_experiment_program_serial_mode():
     from jinja2 import Environment, PackageLoader
 
     env = Environment(loader=PackageLoader("open_researcher", "templates"))
     tmpl = env.get_template("experiment_program.md.j2")
     result = tmpl.render(tag="demo")
-    assert "Master" in result or "master" in result
-    assert "sub-agent" in result or "worker" in result
-    assert "git worktree" in result
+    assert "Serial Experiment Runner" in result
+    assert "one at a time" in result
     assert "CUDA_VISIBLE_DEVICES" in result
+    assert "research/demo" in result
 
 
 def test_init_creates_gpu_status_file(init_dir):
