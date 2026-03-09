@@ -144,3 +144,35 @@ def test_init_creates_worktrees_dir(init_dir):
     """init should create .research/worktrees/ directory."""
     worktrees = init_dir / "worktrees"
     assert worktrees.is_dir()
+
+
+def test_scout_program_template():
+    """scout_program.md.j2 should render with goal variable."""
+    from jinja2 import Environment, PackageLoader
+
+    env = Environment(loader=PackageLoader("open_researcher", "templates"))
+    tmpl = env.get_template("scout_program.md.j2")
+
+    # With goal
+    result = tmpl.render(tag="test", goal="reduce val_loss")
+    assert "reduce val_loss" in result
+    assert "research-strategy.md" in result
+    assert "evaluation.md" in result
+    assert "project-understanding.md" in result
+    assert "Do NOT generate specific experiment ideas" in result
+
+    # Without goal
+    result_no_goal = tmpl.render(tag="test", goal="")
+    assert "Research Goal" not in result_no_goal
+
+
+def test_research_strategy_template():
+    """research-strategy.md.j2 should render as empty scaffold."""
+    from jinja2 import Environment, PackageLoader
+
+    env = Environment(loader=PackageLoader("open_researcher", "templates"))
+    tmpl = env.get_template("research-strategy.md.j2")
+    result = tmpl.render(tag="test")
+    assert "Research Direction" in result
+    assert "Focus Areas" in result
+    assert "Constraints" in result
