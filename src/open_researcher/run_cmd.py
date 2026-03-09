@@ -309,7 +309,7 @@ def _run_parallel_workers(
     idea_pool = IdeaPool(research / "idea_pool.json")
 
     def agent_factory():
-        return exp_agent
+        return get_agent(exp_agent.name)
 
     wm = WorkerManager(
         repo_path=repo_path,

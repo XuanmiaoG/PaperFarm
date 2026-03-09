@@ -148,7 +148,7 @@ def test_multi_alternating_idea_then_experiment():
         mock_idea = MagicMock()
         mock_idea.name = "idea-agent"
 
-        def idea_run(workdir, on_output=None, program_file="program.md"):
+        def idea_run(workdir, on_output=None, program_file="program.md", **kwargs):
             idea_call_count["n"] += 1
             call_order.append("idea")
             if idea_call_count["n"] == 1:
@@ -166,7 +166,7 @@ def test_multi_alternating_idea_then_experiment():
         mock_exp = MagicMock()
         mock_exp.name = "exp-agent"
 
-        def exp_run(workdir, on_output=None, program_file="program.md"):
+        def exp_run(workdir, on_output=None, program_file="program.md", **kwargs):
             call_order.append("exp")
             pool_path = workdir / ".research" / "idea_pool.json"
             pool_data = json.loads(pool_path.read_text())
