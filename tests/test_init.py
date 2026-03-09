@@ -176,3 +176,25 @@ def test_research_strategy_template():
     assert "Research Direction" in result
     assert "Focus Areas" in result
     assert "Constraints" in result
+
+
+def test_init_creates_scout_and_strategy_files(init_dir):
+    """init should create scout_program.md and research-strategy.md."""
+    assert (init_dir / "scout_program.md").is_file()
+    assert (init_dir / "research-strategy.md").is_file()
+
+    scout = (init_dir / "scout_program.md").read_text()
+    assert "Scout Program" in scout
+
+    strategy = (init_dir / "research-strategy.md").read_text()
+    assert "Research Direction" in strategy
+
+
+def test_idea_program_reads_strategy_files():
+    """idea_program.md.j2 should instruct agent to read strategy files."""
+    from jinja2 import Environment, PackageLoader
+
+    env = Environment(loader=PackageLoader("open_researcher", "templates"))
+    tmpl = env.get_template("idea_program.md.j2")
+    result = tmpl.render(tag="test")
+    assert "research-strategy.md" in result

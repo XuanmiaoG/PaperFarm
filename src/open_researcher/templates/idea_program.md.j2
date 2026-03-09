@@ -8,6 +8,14 @@ You are the **Idea Agent** in a dual-agent research system. Your job is to maint
 - **Read**: `.research/results.tsv` — experiment results (written by Experiment Agent)
 - **Write**: `.research/activity.json` — update `idea_agent` key with your current status
 - **Read**: `.research/literature.md`, `.research/project-understanding.md`
+- **Read**: `.research/research-strategy.md` — confirmed research direction and constraints
+
+## Research Context
+
+Before generating ideas, read `.research/research-strategy.md` to understand:
+- The confirmed research direction and focus areas
+- Constraints on what should NOT be changed
+Generate ideas that align with this strategy. If the file is empty or missing, determine the strategy yourself.
 
 ## Status Updates
 
