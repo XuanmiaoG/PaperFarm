@@ -1,76 +1,60 @@
-"""Run command — launch an AI agent to execute the research workflow."""
+"""Run command — launch AI agents with interactive Textual TUI."""
 
 import threading
 from pathlib import Path
 
 from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
-from rich.panel import Panel
 
 from open_researcher.agents import detect_agent, get_agent
-from open_researcher.status_cmd import parse_research_state
 
 console = Console()
 
-_MAX_OUTPUT_LINES = 15
+
+def _launch_agent_thread(
+    agent,
+    workdir: Path,
+    on_output,
+    done_event: threading.Event,
+    exit_codes: dict,
+    key: str,
+    program_file: str = "program.md",
+):
+    """Run an agent in a background thread."""
+    def _run():
+        try:
+            code = agent.run(workdir, on_output=on_output, program_file=program_file)
+        except Exception:
+            code = 1
+        exit_codes[key] = code
+        done_event.set()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
 
 
-def _build_stats_panel(repo_path: Path) -> Panel:
-    """Build the top panel showing experiment statistics."""
-    try:
-        state = parse_research_state(repo_path)
-    except Exception:
-        return Panel("[dim]Waiting for data...[/dim]", title="Stats")
-
-    from open_researcher.status_cmd import PHASE_NAMES
-
-    lines = []
-    phase = state.get("phase", 1)
-    lines.append(f"[bold]Phase:[/bold] {PHASE_NAMES.get(phase, 'Unknown')}")
-    lines.append(f"[bold]Branch:[/bold] {state.get('branch', 'N/A')}    [bold]Mode:[/bold] {state.get('mode', 'N/A')}")
-
-    total = state.get("total", 0)
-    if total > 0:
-        lines.append(
-            f"[bold]Experiments:[/bold] {total} total | "
-            f"[green]{state['keep']} kept[/green] | "
-            f"[yellow]{state['discard']} discarded[/yellow] | "
-            f"[red]{state['crash']} crashed[/red]"
+def _resolve_agent(agent_name: str | None):
+    """Resolve agent by name or auto-detect."""
+    if agent_name:
+        try:
+            return get_agent(agent_name)
+        except KeyError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise SystemExit(1)
+    agent = detect_agent()
+    if agent is None:
+        console.print(
+            "[red]Error:[/red] No supported AI agent found.\n"
+            "Install one of: claude (Claude Code), codex, aider, opencode\n"
+            "Or specify with: --agent <name>"
         )
-        pm = state.get("primary_metric", "")
-        direction = state.get("direction", "")
-        arrow = "\u2191" if direction == "higher_is_better" else "\u2193"
-        lines.append(f"[bold]Primary Metric:[/bold] {pm} {arrow}")
-        if state.get("baseline_value") is not None:
-            bv = state["baseline_value"]
-            cv = state.get("current_value", 0)
-            best = state.get("best_value", 0)
-            lines.append(f"  Baseline: {bv:.4f}   Current: {cv:.4f}   Best: {best:.4f}")
-
-        recent = state.get("recent", [])
-        if recent:
-            lines.append("")
-            for r in recent[-5:]:
-                st = r["status"]
-                color = {"keep": "green", "discard": "yellow", "crash": "red"}.get(st, "white")
-                desc = r["description"]
-                val = f"{r['primary_metric']}={r['metric_value']}"
-                lines.append(f"  [{color}][{st}][/{color}] {desc}  {val}")
-    else:
-        lines.append("[dim]No experiments yet -- agent is starting...[/dim]")
-
-    return Panel("\n".join(lines), title="Open Researcher", border_style="blue")
-
-
-def _build_output_panel(output_lines: list[str], agent_name: str) -> Panel:
-    """Build the bottom panel showing agent stdout."""
-    text = "\n".join(output_lines[-_MAX_OUTPUT_LINES:]) if output_lines else "[dim]Waiting for agent output...[/dim]"
-    return Panel(text, title=f"Agent: {agent_name}", border_style="green")
+        raise SystemExit(1)
+    console.print(f"[green]Auto-detected agent:[/green] {agent.name}")
+    return agent
 
 
 def do_run(repo_path: Path, agent_name: str | None, dry_run: bool) -> None:
-    """Execute the research workflow using an AI agent."""
+    """Single-agent mode — backward compatible."""
     research = repo_path / ".research"
     if not research.is_dir():
         console.print("[red]Error:[/red] .research/ not found. Run 'open-researcher init' first.")
@@ -81,25 +65,8 @@ def do_run(repo_path: Path, agent_name: str | None, dry_run: bool) -> None:
         console.print("[red]Error:[/red] .research/program.md not found.")
         raise SystemExit(1)
 
-    # Resolve agent
-    if agent_name:
-        try:
-            agent = get_agent(agent_name)
-        except KeyError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise SystemExit(1)
-    else:
-        agent = detect_agent()
-        if agent is None:
-            console.print(
-                "[red]Error:[/red] No supported AI agent found.\n"
-                "Install one of: claude (Claude Code), codex, aider, opencode\n"
-                "Or specify with: open-researcher run --agent <name>"
-            )
-            raise SystemExit(1)
-        console.print(f"[green]Auto-detected agent:[/green] {agent.name}")
+    agent = _resolve_agent(agent_name)
 
-    # Dry run
     if dry_run:
         cmd = agent.build_command(program_md, repo_path)
         console.print(f"[bold]Agent:[/bold] {agent.name}")
@@ -108,50 +75,103 @@ def do_run(repo_path: Path, agent_name: str | None, dry_run: bool) -> None:
         console.print("\n[dim]Dry run -- no agent launched.[/dim]")
         return
 
-    # Launch agent with TUI
-    console.print(f"[green]Launching {agent.name}...[/green]")
-    output_lines: list[str] = []
-    agent_done = threading.Event()
-    exit_code = 0
+    # Launch with Textual TUI
+    from open_researcher.tui.app import ResearchApp
 
-    def _run_agent():
-        nonlocal exit_code
+    app = ResearchApp(repo_path, multi=False)
+    done = threading.Event()
+    exit_codes: dict[str, int] = {}
 
-        def on_output(line: str):
-            output_lines.append(line)
-            log_path = research / "run.log"
-            with open(log_path, "a") as f:
-                f.write(line + "\n")
+    def on_output(line: str):
+        app.append_exp_log(line)
+        log_path = research / "run.log"
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
 
-        exit_code = agent.run(repo_path, on_output=on_output)
-        agent_done.set()
+    _launch_agent_thread(agent, repo_path, on_output, done, exit_codes, "agent")
+    app.run()
 
-    agent_thread = threading.Thread(target=_run_agent, daemon=True)
-    agent_thread.start()
-
-    try:
-        with Live(console=console, refresh_per_second=1, transient=True) as live:
-            while not agent_done.is_set():
-                layout = Layout()
-                layout.split_column(
-                    Layout(name="stats", ratio=2),
-                    Layout(name="output", ratio=1),
-                )
-                layout["stats"].update(_build_stats_panel(repo_path))
-                layout["output"].update(_build_output_panel(output_lines, agent.name))
-                live.update(layout)
-                agent_done.wait(timeout=1.0)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted by user.[/yellow]")
-        raise SystemExit(130)
-
-    agent_thread.join(timeout=5)
-
-    if exit_code == 0:
+    code = exit_codes.get("agent", 0)
+    if code == 0:
         console.print(f"\n[green]Agent {agent.name} completed successfully.[/green]")
     else:
-        console.print(f"\n[red]Agent {agent.name} exited with code {exit_code}.[/red]")
+        console.print(f"\n[red]Agent {agent.name} exited with code {code}.[/red]")
 
-    # Print final status
+    from open_researcher.status_cmd import print_status
+    print_status(repo_path)
+
+
+def do_run_multi(
+    repo_path: Path,
+    idea_agent_name: str | None,
+    exp_agent_name: str | None,
+    dry_run: bool,
+) -> None:
+    """Dual-agent mode — Idea Agent + Experiment Agent in parallel."""
+    research = repo_path / ".research"
+    if not research.is_dir():
+        console.print("[red]Error:[/red] .research/ not found. Run 'open-researcher init' first.")
+        raise SystemExit(1)
+
+    idea_program = research / "idea_program.md"
+    exp_program = research / "experiment_program.md"
+
+    for p in [idea_program, exp_program]:
+        if not p.exists():
+            console.print(f"[red]Error:[/red] {p.name} not found. Re-run 'open-researcher init'.")
+            raise SystemExit(1)
+
+    idea_agent = _resolve_agent(idea_agent_name)
+    exp_agent = _resolve_agent(exp_agent_name)
+
+    if dry_run:
+        console.print(f"[bold]Idea Agent:[/bold] {idea_agent.name}")
+        console.print(f"[bold]Experiment Master Agent:[/bold] {exp_agent.name}")
+        console.print(f"[bold]Working directory:[/bold] {repo_path}")
+        console.print("\n[dim]Dry run -- no agents launched.[/dim]")
+        return
+
+    # Ensure worktrees directory exists for parallel experiments
+    worktrees_dir = research / "worktrees"
+    worktrees_dir.mkdir(exist_ok=True)
+
+    # Launch with Textual TUI
+    from open_researcher.tui.app import ResearchApp
+
+    app = ResearchApp(repo_path, multi=True)
+    done_idea = threading.Event()
+    done_exp = threading.Event()
+    exit_codes: dict[str, int] = {}
+
+    def on_idea_output(line: str):
+        app.append_idea_log(line)
+        log_path = research / "idea_agent.log"
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+
+    def on_exp_output(line: str):
+        app.append_exp_log(line)
+        log_path = research / "experiment_agent.log"
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+
+    _launch_agent_thread(
+        idea_agent, repo_path, on_idea_output, done_idea, exit_codes, "idea",
+        program_file="idea_program.md",
+    )
+    _launch_agent_thread(
+        exp_agent, repo_path, on_exp_output, done_exp, exit_codes, "exp",
+        program_file="experiment_program.md",
+    )
+
+    app.run()
+
+    for key, name in [("idea", "Idea Agent"), ("exp", "Experiment Master")]:
+        code = exit_codes.get(key, 0)
+        if code == 0:
+            console.print(f"[green]{name} completed successfully.[/green]")
+        else:
+            console.print(f"[red]{name} exited with code {code}.[/red]")
+
     from open_researcher.status_cmd import print_status
     print_status(repo_path)

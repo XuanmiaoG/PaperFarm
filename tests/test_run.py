@@ -66,7 +66,42 @@ def test_run_launches_agent():
         mock_agent.name = "test-agent"
         mock_agent.run.return_value = 0
 
-        with patch("open_researcher.run_cmd.get_agent", return_value=mock_agent):
+        mock_app = MagicMock()
+        mock_app_cls = MagicMock(return_value=mock_app)
+
+        with patch("open_researcher.run_cmd.get_agent", return_value=mock_agent), \
+             patch("open_researcher.tui.app.ResearchApp", mock_app_cls), \
+             patch("open_researcher.status_cmd.print_status", return_value=None):
             do_run(repo, agent_name="test-agent", dry_run=False)
 
         mock_agent.run.assert_called_once()
+
+
+def test_run_multi_fails_without_research_dir(tmp_path, monkeypatch):
+    """Multi-agent mode requires .research/ directory."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        from open_researcher.run_cmd import do_run_multi
+        do_run_multi(repo_path=tmp_path, idea_agent_name=None, exp_agent_name=None, dry_run=False)
+
+
+def test_run_multi_dry_run_shows_master(capsys):
+    from open_researcher.run_cmd import do_run_multi
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        research = repo / ".research"
+        research.mkdir()
+        (research / "idea_program.md").write_text("Idea instructions")
+        (research / "experiment_program.md").write_text("Master instructions")
+
+        mock_idea = MagicMock()
+        mock_idea.name = "claude-code"
+        mock_exp = MagicMock()
+        mock_exp.name = "claude-code"
+
+        with patch("open_researcher.run_cmd.get_agent", side_effect=[mock_idea, mock_exp]):
+            do_run_multi(repo, idea_agent_name="claude-code", exp_agent_name="claude-code", dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "Idea Agent" in captured.out
+        assert "Experiment Master" in captured.out
