@@ -1,11 +1,13 @@
 """Implementation of the 'init' command."""
 
+import json
 import shutil
 import stat
 import sys
 from datetime import date
 from pathlib import Path
 
+import yaml
 from jinja2 import Environment, PackageLoader
 
 
@@ -28,6 +30,12 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
 
     research_dir.mkdir()
 
+    # Calculate search_interval for idea_program template
+    config_template = env.get_template("config.yaml.j2")
+    config_content = yaml.safe_load(config_template.render(context))
+    search_interval = config_content.get("research", {}).get("search_interval", 5)
+    context["search_interval"] = search_interval
+
     # Render each template
     for template_name, output_name in [
         ("program.md.j2", "program.md"),
@@ -36,6 +44,8 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
         ("evaluation.md.j2", "evaluation.md"),
         ("literature.md.j2", "literature.md"),
         ("ideas.md.j2", "ideas.md"),
+        ("idea_program.md.j2", "idea_program.md"),
+        ("experiment_program.md.j2", "experiment_program.md"),
     ]:
         template = env.get_template(template_name)
         content = template.render(context)
@@ -44,6 +54,17 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
     # Create results.tsv with header
     header = "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
     (research_dir / "results.tsv").write_text(header)
+
+    # Create shared coordination files for multi-agent mode
+    (research_dir / "idea_pool.json").write_text(json.dumps({"ideas": []}, indent=2))
+    (research_dir / "activity.json").write_text("{}")
+    (research_dir / "control.json").write_text(json.dumps({"paused": False, "skip_current": False}, indent=2))
+
+    # Create GPU status file for parallel experiments
+    (research_dir / "gpu_status.json").write_text(json.dumps({"gpus": []}, indent=2))
+
+    # Create worktrees directory for parallel experiments
+    (research_dir / "worktrees").mkdir()
 
     # Copy helper scripts
     scripts_dir = research_dir / "scripts"

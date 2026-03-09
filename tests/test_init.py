@@ -4,7 +4,20 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from open_researcher.init_cmd import do_init
+
+
+@pytest.fixture
+def init_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+    do_init(repo_path=tmp_path, tag="test")
+    return tmp_path / ".research"
 
 
 def test_init_creates_research_directory():
@@ -118,3 +131,17 @@ def test_experiment_program_master_mode():
     assert "sub-agent" in result or "worker" in result
     assert "git worktree" in result
     assert "CUDA_VISIBLE_DEVICES" in result
+
+
+def test_init_creates_gpu_status_file(init_dir):
+    """init should create gpu_status.json."""
+    gpu_file = init_dir / "gpu_status.json"
+    assert gpu_file.exists()
+    data = json.loads(gpu_file.read_text())
+    assert "gpus" in data
+
+
+def test_init_creates_worktrees_dir(init_dir):
+    """init should create .research/worktrees/ directory."""
+    worktrees = init_dir / "worktrees"
+    assert worktrees.is_dir()
