@@ -89,7 +89,11 @@ class ReviewScreen(Screen[str | None]):
             yield Button("Quit", id="btn-quit")
 
         yield Static(
-            "\\[Enter] Confirm  \\[e] Edit Strategy  \\[m] Edit Metrics  \\[r] Re-analyze  \\[q] Quit",
+            "[bold #7dcfff]\\[Enter][/bold #7dcfff] [dim]Confirm[/dim]  "
+            "[bold #7dcfff]\\[e][/bold #7dcfff] [dim]Edit Strategy[/dim]  "
+            "[bold #7dcfff]\\[m][/bold #7dcfff] [dim]Edit Metrics[/dim]  "
+            "[bold #7dcfff]\\[r][/bold #7dcfff] [dim]Re-analyze[/dim]  "
+            "[bold #7dcfff]\\[q][/bold #7dcfff] [dim]Quit[/dim]",
             id="review-footer",
         )
 

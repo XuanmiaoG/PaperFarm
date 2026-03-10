@@ -4,8 +4,9 @@ Screen {
 
 #stats-bar {
     dock: top;
-    height: 1;
-    background: $primary-background;
+    height: auto;
+    max-height: 2;
+    background: $panel;
     color: $text;
     padding: 0 1;
 }
@@ -15,21 +16,25 @@ Screen {
 }
 
 TabPane {
-    padding: 0;
+    padding: 0 1;
 }
 
 #exp-status {
     height: auto;
-    min-height: 2;
-    max-height: 6;
-    border: solid $accent;
+    min-height: 3;
+    max-height: 8;
+    border: tall $primary-background;
+    background: $panel;
     padding: 0 1;
 }
 
 #recent-exp {
     height: auto;
-    max-height: 10;
+    min-height: 3;
+    border: tall $primary-background;
+    background: $panel;
     padding: 0 1;
+    margin-top: 1;
 }
 
 #idea-scroll {
@@ -58,7 +63,7 @@ TabPane {
 #hotkey-bar {
     dock: bottom;
     height: 1;
-    background: $primary-background;
+    background: $panel;
     color: $text-muted;
     padding: 0 1;
 }
@@ -70,7 +75,7 @@ AddIdeaModal {
 AddIdeaModal > #dialog {
     width: 60;
     height: auto;
-    border: thick $primary;
+    border: tall $accent;
     background: $surface;
     padding: 1 2;
 }
@@ -83,7 +88,7 @@ GPUStatusModal > #gpu-dialog {
     width: 80;
     height: auto;
     max-height: 80%;
-    border: thick $primary;
+    border: tall $accent;
     background: $surface;
     padding: 1 2;
 }
@@ -101,7 +106,7 @@ LogScreen #log-content {
 LogScreen #log-footer {
     dock: bottom;
     height: 1;
-    background: $primary-background;
+    background: $panel;
     padding: 0 1;
 }
 
@@ -112,7 +117,7 @@ GoalInputModal {
 GoalInputModal > #goal-dialog {
     width: 70;
     height: auto;
-    border: thick $primary;
+    border: tall $accent;
     background: $surface;
     padding: 1 2;
 }
@@ -134,7 +139,7 @@ ReviewScreen {
 
 #review-title {
     text-style: bold;
-    color: $success;
+    color: $accent;
     margin: 0 0 1 0;
 }
 
@@ -153,12 +158,13 @@ ReviewScreen {
     height: auto;
     padding: 1 2;
     layout: horizontal;
+    background: $panel;
 }
 
 #review-footer {
     dock: bottom;
     height: 1;
-    background: $primary-background;
+    background: $panel;
     color: $text-muted;
     padding: 0 1;
 }
@@ -172,6 +178,7 @@ EditDocScreen {
     height: 1;
     text-style: bold;
     padding: 0 1;
+    background: $panel;
 }
 
 #edit-area {
@@ -183,4 +190,5 @@ EditDocScreen {
     height: auto;
     layout: horizontal;
     padding: 0 1;
+    background: $panel;
 }

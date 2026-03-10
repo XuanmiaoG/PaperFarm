@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Callable
 
 from open_researcher.activity import ActivityMonitor
+from open_researcher.failure_memory import (
+    MEMORY_POLICY,
+    FailureMemoryLedger,
+    classify_failure,
+)
 from open_researcher.gpu_manager import GPUManager
 from open_researcher.idea_pool import IdeaPool
 from open_researcher.worktree import create_worktree, remove_worktree
@@ -36,6 +41,9 @@ class WorkerManager:
         self._stop = threading.Event()
         self._workers: list[threading.Thread] = []
         self._activity = ActivityMonitor(research_dir)
+        self._failure_memory = FailureMemoryLedger(
+            research_dir / "failure_memory_ledger.json"
+        )
 
     def start(self) -> None:
         """Start worker threads based on available GPUs."""
@@ -94,13 +102,33 @@ class WorkerManager:
                 self.on_output(f"[{wid}] No more pending ideas, stopping")
                 break
 
+            idea_description = str(idea.get("description", ""))
+            claim_token = str(idea.get("claim_token", "")).strip()
+            failure_class = classify_failure(idea_description)
+            ranked_fixes = self._failure_memory.rank_fixes(failure_class)
+            ranked_fix_actions = [
+                str(item.get("fix_action", "")).strip()
+                for item in ranked_fixes
+                if str(item.get("fix_action", "")).strip()
+            ]
+            first_fix_action = (
+                ranked_fix_actions[0] if ranked_fix_actions else "generate_new_plan"
+            )
+
             self._activity.update_worker(
                 "experiment_agent",
                 wid,
                 status="running",
-                idea=idea["description"][:50],
+                idea=idea_description[:50],
+                failure_class=failure_class,
+                memory_policy=MEMORY_POLICY,
+                ranked_fixes=ranked_fix_actions[:3],
+                first_fix_action=first_fix_action,
             )
-            self.on_output(f"[{wid}] Running: {idea['description'][:60]}")
+            self.on_output(f"[{wid}] Running: {idea_description[:60]}")
+            self.on_output(
+                f"[{wid}] Memory policy {MEMORY_POLICY}: first remediation action {first_fix_action}"
+            )
             if gpu_env:
                 self.on_output(f"[{wid}] Using GPU env: {gpu_env}")
 
@@ -116,21 +144,61 @@ class WorkerManager:
 
             # Create agent and run in isolated worktree
             agent = self.agent_factory()
+            run_code = 1
             try:
+                run_env = {
+                    **gpu_env,
+                    "OPEN_RESEARCHER_MEMORY_POLICY": MEMORY_POLICY,
+                    "OPEN_RESEARCHER_FAILURE_CLASS": failure_class,
+                    "OPEN_RESEARCHER_RANKED_FIXES": ",".join(ranked_fix_actions[:3]),
+                    "OPEN_RESEARCHER_FIRST_FIX_ACTION": first_fix_action,
+                }
                 code = agent.run(
                     workdir,
                     on_output=self.on_output,
                     program_file="experiment_program.md",
-                    env=gpu_env if gpu_env else None,
+                    env=run_env,
                 )
+                run_code = int(code)
                 if code == 0:
-                    self.idea_pool.mark_done(idea["id"], metric_value=None, verdict="completed")
+                    applied = self.idea_pool.mark_done(
+                        idea["id"],
+                        metric_value=None,
+                        verdict="completed",
+                        claim_token=claim_token or None,
+                    )
+                    if not applied:
+                        self.on_output(
+                            f"[{wid}] Claim race detected for {idea['id']}; winner already finalized, cleanup applied"
+                        )
                 else:
-                    self.idea_pool.update_status(idea["id"], "skipped")
+                    applied = self.idea_pool.update_status(
+                        idea["id"], "skipped", claim_token=claim_token or None
+                    )
+                    if not applied:
+                        self.on_output(
+                            f"[{wid}] Claim race detected for {idea['id']}; skip write suppressed, cleanup applied"
+                        )
             except Exception as exc:
                 self.on_output(f"[{wid}] Error: {exc}")
-                self.idea_pool.update_status(idea["id"], "skipped")
+                applied = self.idea_pool.update_status(
+                    idea["id"], "skipped", claim_token=claim_token or None
+                )
+                if not applied:
+                    self.on_output(
+                        f"[{wid}] Claim race detected for {idea['id']}; error skip suppressed, cleanup applied"
+                    )
+                run_code = 1
             finally:
+                try:
+                    self._failure_memory.record(
+                        failure_class=failure_class,
+                        fix_action=first_fix_action,
+                        verification_result="pass" if run_code == 0 else "fail",
+                        recovery_iterations=1 if run_code == 0 else 2,
+                    )
+                except Exception as exc:
+                    logger.debug("Failure memory record failed: %s", exc)
                 # Always clean up worktree
                 if wt_path is not None:
                     try:

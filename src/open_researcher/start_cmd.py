@@ -101,13 +101,22 @@ def do_start(
 
         def _after_scout():
             done_scout.wait()
+            if stop.is_set():
+                return
             code = exit_codes.get("scout", -1)
             if code != 0:
-                app.call_from_thread(
-                    app.notify, f"Scout Agent failed (code={code}). Check logs.", severity="error"
-                )
-            app.app_phase = "reviewing"
-            app.call_from_thread(_show_review)
+                try:
+                    app.call_from_thread(
+                        app.notify, f"Scout Agent failed (code={code}). Check logs.", severity="error"
+                    )
+                except RuntimeError:
+                    pass  # App already closed
+                return  # Never push ReviewScreen on failure
+            try:
+                app.call_from_thread(setattr, app, "app_phase", "reviewing")
+                app.call_from_thread(_show_review)
+            except RuntimeError:
+                pass  # App already closed
 
         _launch_agent_thread(
             scout_agent, repo_path, on_output, done_scout, exit_codes, "scout",

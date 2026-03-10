@@ -101,9 +101,35 @@ def test_claim_idea_atomic(pool):
     assert claimed is not None
     assert claimed["status"] == "running"
     assert claimed["claimed_by"] == "w-001"
+    assert claimed["claim_token"].startswith("claim-")
+    first_seq = int(claimed["claim_token_seq"])
     claimed2 = pool.claim_idea(worker_id="w-002")
     assert claimed2 is not None
     assert claimed2["id"] != claimed["id"]
+    assert int(claimed2["claim_token_seq"]) > first_seq
+
+
+def test_mark_done_rejects_stale_claim_token(pool):
+    pool.add("idea A", priority=1)
+    claim = pool.claim_idea(worker_id="w-001")
+    assert claim is not None
+
+    stale_ok = pool.mark_done(
+        claim["id"], metric_value=1.23, verdict="kept", claim_token="stale-token"
+    )
+    assert stale_ok is False
+    assert len(pool.list_by_status("done")) == 0
+
+    accepted = pool.mark_done(
+        claim["id"],
+        metric_value=1.23,
+        verdict="kept",
+        claim_token=claim["claim_token"],
+    )
+    assert accepted is True
+    done = pool.list_by_status("done")
+    assert len(done) == 1
+    assert done[0]["result"]["metric_value"] == 1.23
 
 
 def test_claim_idea_none_available(pool):

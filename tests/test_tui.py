@@ -6,6 +6,7 @@ from open_researcher.tui.widgets import (
     IdeaListPanel,
     RecentExperiments,
     StatsBar,
+    render_ideas_markdown,
 )
 
 
@@ -16,8 +17,8 @@ def test_stats_bar_colored_output():
         "best_value": 1.47, "primary_metric": "val_loss",
     }
     bar.update_stats(state)
-    assert "3 kept" in bar.stats_text
-    assert "2 disc" in bar.stats_text
+    assert "3K" in bar.stats_text
+    assert "2D" in bar.stats_text
     assert "1.47" in bar.stats_text
 
 
@@ -80,7 +81,7 @@ def test_idea_list_panel_empty():
 def test_hotkey_bar_shows_tabs():
     bar = HotkeyBar()
     rendered = bar.render()
-    assert "tabs" in rendered.plain
+    assert "tabs" in str(rendered)
 
 
 def test_hotkey_bar_includes_quit():
@@ -104,3 +105,41 @@ def test_recent_experiments_empty():
     widget = RecentExperiments()
     widget.update_results([])
     assert "No experiments" in widget.results_text
+
+
+def test_render_ideas_markdown_empty():
+    result = render_ideas_markdown([])
+    assert "No ideas yet" in result
+    assert "Idea Backlog" in result
+
+
+def test_render_ideas_markdown_with_data():
+    ideas = [
+        {"id": "idea-001", "description": "Add dropout", "category": "regularization",
+         "priority": 1, "status": "done",
+         "result": {"metric_value": 0.85, "verdict": "kept"}},
+        {"id": "idea-002", "description": "Batch norm", "category": "architecture",
+         "priority": 2, "status": "running", "result": None},
+        {"id": "idea-003", "description": "LR warmup", "category": "training",
+         "priority": 3, "status": "pending", "result": None},
+    ]
+    result = render_ideas_markdown(ideas)
+    assert "idea-001" in result
+    assert "Add dropout" in result
+    assert "0.85" in result
+    assert "kept" in result
+    assert "running..." in result
+    assert "1 pending" in result
+    assert "1 running" in result
+    assert "1 done" in result
+    assert "3 total" in result
+
+
+def test_render_ideas_markdown_escapes_pipe():
+    ideas = [
+        {"id": "idea-001", "description": "Use A|B config", "category": "test|cat",
+         "priority": 1, "status": "pending", "result": None},
+    ]
+    result = render_ideas_markdown(ideas)
+    assert "A\\|B" in result
+    assert "test\\|cat" in result

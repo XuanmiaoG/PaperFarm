@@ -60,20 +60,14 @@ def _read_latest_status(research_dir: Path) -> str:
 
 def _set_paused(research_dir: Path, reason: str) -> None:
     """Set control.json paused=True with a reason."""
-    from filelock import FileLock
+    from open_researcher.control_plane import issue_control_command
 
-    from open_researcher.storage import atomic_write_json
-
-    ctrl_path = research_dir / "control.json"
-    lock = FileLock(str(ctrl_path) + ".lock")
-    with lock:
-        try:
-            ctrl = json.loads(ctrl_path.read_text())
-        except (json.JSONDecodeError, OSError, FileNotFoundError):
-            ctrl = {}
-        ctrl["paused"] = True
-        ctrl["pause_reason"] = reason
-        atomic_write_json(ctrl_path, ctrl)
+    issue_control_command(
+        research_dir / "control.json",
+        command="pause",
+        source="watchdog",
+        reason=reason,
+    )
 
 
 def _has_pending_ideas(research_dir: Path) -> bool:
@@ -93,27 +87,27 @@ def _classify_line(line: str, phase: str) -> str:
 
     # System messages
     if stripped.startswith("[exp]") or stripped.startswith("[idea]"):
-        return f"[bold cyan]{escaped}[/bold cyan]"
+        return f"[bold #7dcfff]{escaped}[/bold #7dcfff]"
 
     # Diff coloring
     if stripped.startswith("diff --git"):
-        return f"[bold white]{escaped}[/bold white]"
+        return f"[bold #c0caf5]{escaped}[/bold #c0caf5]"
     if stripped.startswith("file update:"):
-        return f"[bold magenta]{escaped}[/bold magenta]"
+        return f"[bold #bb9af7]{escaped}[/bold #bb9af7]"
     if stripped.startswith("@@"):
-        return f"[yellow]{escaped}[/yellow]"
+        return f"[#e0af68]{escaped}[/#e0af68]"
     if stripped.startswith("+") and not stripped.startswith("+++"):
-        return f"[green]{escaped}[/green]"
+        return f"[#9ece6a]{escaped}[/#9ece6a]"
     if stripped.startswith("-") and not stripped.startswith("---"):
-        return f"[red]{escaped}[/red]"
+        return f"[#f7768e]{escaped}[/#f7768e]"
 
     # Training output
     if "step " in stripped and ("loss" in stripped or "iter" in stripped):
-        return f"[cyan]{escaped}[/cyan]"
+        return f"[#7dcfff]{escaped}[/#7dcfff]"
 
     # Errors
     if "error" in stripped.lower() or "traceback" in stripped.lower():
-        return f"[bold red]{escaped}[/bold red]"
+        return f"[bold #f7768e]{escaped}[/bold #f7768e]"
 
     # Thinking phase → dim italic
     if phase == "thinking":
@@ -156,13 +150,13 @@ def _make_safe_output(app_log_fn, log_path: Path):
                     if stripped == "thinking":
                         state["phase"] = "thinking"
                         try:
-                            app_log_fn("[dim]───── 💭 Thinking ─────[/dim]")
+                            app_log_fn("[#565f89]───── Thinking ─────[/#565f89]")
                         except Exception:
                             pass
                     else:
                         state["phase"] = "acting"
                         try:
-                            app_log_fn("[bold]───── ✦ Acting ─────[/bold]")
+                            app_log_fn("[bold #7aa2f7]───── Acting ─────[/bold #7aa2f7]")
                         except Exception:
                             pass
                     return
@@ -173,14 +167,14 @@ def _make_safe_output(app_log_fn, log_path: Path):
             if stripped == "thinking":
                 state["phase"] = "thinking"
                 try:
-                    app_log_fn("[dim]───── 💭 Thinking ─────[/dim]")
+                    app_log_fn("[#565f89]───── Thinking ─────[/#565f89]")
                 except Exception:
                     pass
                 return
             if stripped == "assistant":
                 state["phase"] = "acting"
                 try:
-                    app_log_fn("[bold]───── ✦ Acting ─────[/bold]")
+                    app_log_fn("[bold #7aa2f7]───── Acting ─────[/bold #7aa2f7]")
                 except Exception:
                     pass
                 return
