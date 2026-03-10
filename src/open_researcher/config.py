@@ -11,6 +11,7 @@ class ResearchConfig:
     mode: str = "autonomous"
     timeout: int = 600
     max_crashes: int = 3
+    max_experiments: int = 0
     max_workers: int = 0
     worker_agent: str = ""
     primary_metric: str = ""
@@ -38,6 +39,7 @@ def load_config(research_dir: Path) -> ResearchConfig:
         mode=raw.get("mode", "autonomous"),
         timeout=exp.get("timeout", 600),
         max_crashes=exp.get("max_consecutive_crashes", 3),
+        max_experiments=exp.get("max_experiments", 0),
         max_workers=exp.get("max_parallel_workers", 0),
         worker_agent=exp.get("worker_agent", ""),
         primary_metric=metrics.get("name", ""),

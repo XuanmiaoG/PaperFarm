@@ -73,6 +73,27 @@ def test_load_config_defaults(research_dir):
     assert cfg.remote_hosts == []
 
 
+def test_load_config_max_experiments(research_dir):
+    """max_experiments should be parsed from config."""
+    config_data = {
+        "experiment": {
+            "max_experiments": 20,
+        },
+    }
+    config_path = research_dir / "config.yaml"
+    config_path.write_text(yaml.dump(config_data))
+    cfg = load_config(research_dir)
+    assert cfg.max_experiments == 20
+
+
+def test_load_config_max_experiments_default(research_dir):
+    """max_experiments defaults to 0 (unlimited)."""
+    config_path = research_dir / "config.yaml"
+    config_path.write_text(yaml.dump({"mode": "autonomous"}))
+    cfg = load_config(research_dir)
+    assert cfg.max_experiments == 0
+
+
 def test_load_config_missing_file(research_dir):
     """When config.yaml does not exist, return all defaults."""
     cfg = load_config(research_dir)
