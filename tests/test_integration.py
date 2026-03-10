@@ -133,11 +133,11 @@ def test_idea_pool_workflow(tmp_path):
     """Test the full idea lifecycle: add -> pick -> run -> done."""
     import json as json_mod
 
-    from open_researcher.idea_pool import IdeaPool
+    from open_researcher.idea_pool import IdeaBacklog
 
     pool_file = tmp_path / "idea_pool.json"
     pool_file.write_text(json_mod.dumps({"ideas": []}))
-    pool = IdeaPool(pool_file)
+    pool = IdeaBacklog(pool_file)
 
     # Add ideas
     pool.add("cosine LR", source="literature", category="training", priority=1)
@@ -146,10 +146,14 @@ def test_idea_pool_workflow(tmp_path):
     # Pick highest priority
     pending = pool.list_by_status("pending")
     assert pending[0]["description"] == "cosine LR"
+    assert "claimed_by" not in pending[0]
+    assert "assigned_experiment" not in pending[0]
 
     # Mark running
-    pool.update_status(pending[0]["id"], "running", experiment=1)
+    pool.update_status(pending[0]["id"], "running")
     assert pool.summary()["running"] == 1
+    running = pool.list_by_status("running")
+    assert "assigned_experiment" not in running[0]
 
     # Mark done
     pool.mark_done(pending[0]["id"], metric_value=0.87, verdict="kept")

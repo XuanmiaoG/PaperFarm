@@ -95,6 +95,8 @@ def test_ideas_add(research_dir):
     assert len(data["ideas"]) == 1
     assert data["ideas"][0]["description"] == "Try dropout 0.3"
     assert data["ideas"][0]["source"] == "user"
+    assert "claimed_by" not in data["ideas"][0]
+    assert "assigned_experiment" not in data["ideas"][0]
 
 
 def test_ideas_add_with_options(research_dir):

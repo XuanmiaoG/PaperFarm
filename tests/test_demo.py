@@ -32,6 +32,9 @@ def test_build_idea_pool():
     assert "pending" in statuses
     assert "done" in statuses
     assert "running" in statuses
+    for idea in pool["ideas"]:
+        assert "assigned_experiment" not in idea
+        assert "claimed_by" not in idea
 
 
 def test_populate_research():
@@ -46,6 +49,7 @@ def test_populate_research():
         assert (research / "activity.json").exists()
         assert (research / "config.yaml").exists()
         assert (research / "control.json").exists()
+        assert (research / "events.jsonl").exists()
         assert (research / "project-understanding.md").exists()
         assert (research / "literature.md").exists()
         assert (research / "evaluation.md").exists()
@@ -57,6 +61,7 @@ def test_populate_research():
         json.loads((research / "activity.json").read_text())
         json.loads((research / "control.json").read_text())
         json.loads((research / "gpu_status.json").read_text())
+        assert (research / "events.jsonl").read_text() == ""
 
 
 def test_demo_cli_help():

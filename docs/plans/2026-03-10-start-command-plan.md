@@ -1,5 +1,7 @@
 # Start Command Implementation Plan
 
+> Historical note: the zero-config bootstrap flow was later merged into `run`; current code lives in `src/open_researcher/run_cmd.py`, and the current bootstrap test file is `tests/test_run_bootstrap.py`.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Add a `start` command that provides a zero-config, one-command experience: auto-init → Scout Agent analyzes repo → TUI Review → Idea+Experiment Agents run.
@@ -870,18 +872,18 @@ git commit -m "feat: add app_phase state to ResearchApp"
 
 ---
 
-### Task 8: start_cmd.py — Core Start Logic
+### Task 8: start/bootstrap flow — Core Logic
 
 **Files:**
-- Create: `src/open_researcher/start_cmd.py`
-- Test: `tests/test_start_cmd.py` (new test file)
+- Create: `src/open_researcher/run_cmd.py` bootstrap helpers
+- Test: `tests/test_run_bootstrap.py`
 
 **Step 1: Write the failing test**
 
-Create `tests/test_start_cmd.py`:
+Create `tests/test_run_bootstrap.py`:
 
 ```python
-"""Tests for the start command."""
+"""Tests for the bootstrap helpers used by the unified run command."""
 
 import json
 import subprocess
@@ -955,12 +957,12 @@ def test_render_scout_without_goal(tmp_path):
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/shatianming/Downloads/open-researcher && python -m pytest tests/test_start_cmd.py -v`
+Run: `cd /Users/shatianming/Downloads/open-researcher && python -m pytest tests/test_run_bootstrap.py -v`
 Expected: FAIL — ImportError
 
-**Step 3: Implement start_cmd.py**
+**Step 3: Implement bootstrap helpers in run_cmd.py**
 
-Create `src/open_researcher/start_cmd.py`:
+Implement the bootstrap helpers in `src/open_researcher/run_cmd.py`:
 
 ```python
 """Start command — zero-config launch with Scout analysis + TUI review."""
@@ -1033,7 +1035,7 @@ def do_start(
     idea_agent_name: str | None = None,
     exp_agent_name: str | None = None,
 ) -> None:
-    """Execute the start command: auto-init → Scout → Review → Experiment."""
+    """Execute the bootstrap flow: auto-init → Scout → Review → Experiment."""
     from open_researcher.run_cmd import (
         _launch_agent_thread,
         _make_safe_output,
@@ -1251,14 +1253,14 @@ def do_start(
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/shatianming/Downloads/open-researcher && python -m pytest tests/test_start_cmd.py -v`
+Run: `cd /Users/shatianming/Downloads/open-researcher && python -m pytest tests/test_run_bootstrap.py -v`
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add src/open_researcher/start_cmd.py tests/test_start_cmd.py
-git commit -m "feat: add start_cmd.py with Scout → Review → Experiment flow"
+git add src/open_researcher/run_cmd.py tests/test_run_bootstrap.py
+git commit -m "feat: add bootstrap helpers with Scout → Review → Experiment flow"
 ```
 
 ---
@@ -1370,6 +1372,6 @@ git commit -m "fix: resolve integration issues for start command"
 | 5 | GoalInputModal | `tui/modals.py` |
 | 6 | ReviewScreen | `tui/review.py` |
 | 7 | App state machine | `tui/app.py` |
-| 8 | start_cmd.py | `start_cmd.py` |
+| 8 | bootstrap flow | `run_cmd.py` |
 | 9 | CLI registration | `cli.py` |
 | 10 | Integration test | All files |

@@ -1,5 +1,7 @@
 # Parallel Experiments Implementation Plan
 
+> **Historical note (2026-03-10):** This plan predates the `IdeaBacklog` / `IdeaPool` split. References to `claimed_by`, `assigned_experiment`, and claim-token metadata remain accurate for parallel-worker mode, but not for the default serial backlog path.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 支持多 idea 并发跑在不同 GPU 上 + 单 idea 多卡 DDP，同时修复 TUI 显示问题。

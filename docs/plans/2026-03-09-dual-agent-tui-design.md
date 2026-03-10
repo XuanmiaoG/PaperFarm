@@ -1,5 +1,7 @@
 # Dual-Agent Architecture + Runtime TUI Design
 
+> **Historical note (2026-03-10):** This design document predates the `IdeaBacklog` / `IdeaPool` split. Any examples using `claimed_by`, `assigned_experiment`, or claim-token metadata now apply only to parallel-worker mode.
+
 ## Goal
 
 Replace the current single-agent loop with a two-agent parallel architecture (Idea Agent + Experiment Agent) and build a real-time TUI that shows what each agent is doing, the idea pool status, and experiment progress.

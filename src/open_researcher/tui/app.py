@@ -15,7 +15,7 @@ from textual.widgets import RichLog, TabbedContent, TabPane
 
 from open_researcher.activity import ActivityMonitor
 from open_researcher.control_plane import issue_control_command, read_control
-from open_researcher.idea_pool import IdeaPool
+from open_researcher.idea_pool import IdeaBacklog
 from open_researcher.status_cmd import parse_research_state
 from open_researcher.tui.modals import AddIdeaModal, GPUStatusModal, LogScreen
 from open_researcher.tui.widgets import (
@@ -58,7 +58,7 @@ class ResearchApp(App):
         self.repo_path = repo_path
         self.research_dir = repo_path / ".research"
         self.multi = multi
-        self.pool = IdeaPool(self.research_dir / "idea_pool.json")
+        self.pool = IdeaBacklog(self.research_dir / "idea_pool.json")
         self.activity = ActivityMonitor(self.research_dir)
         self._on_ready = on_ready
         self.app_phase = initial_phase  # "scouting" | "reviewing" | "experimenting"

@@ -465,8 +465,8 @@ class DocViewer(Static):
         """Generate dynamic content for special files."""
         if filename == "ideas.md":
             try:
-                from open_researcher.idea_pool import IdeaPool
-                pool = IdeaPool(self.research_dir / "idea_pool.json")
+                from open_researcher.idea_pool import IdeaBacklog
+                pool = IdeaBacklog(self.research_dir / "idea_pool.json")
                 return render_ideas_markdown(pool.all_ideas())
             except Exception:
                 logger.debug("Error reading idea pool for ideas.md", exc_info=True)

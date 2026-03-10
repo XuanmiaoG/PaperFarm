@@ -19,6 +19,7 @@ htmlcov/
 
 # Research runtime data (created by `open-researcher init`)
 .research/
+/events.jsonl
 
 # Demo workspace
 _demo_workspace/

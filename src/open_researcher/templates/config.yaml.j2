@@ -33,6 +33,11 @@ research:
   web_search: true          # let agent use web search if available
   search_interval: 5        # refresh ideas every N experiments
 
+runtime:
+  gpu_allocation: true      # advanced plugin: GPU scheduling/allocation
+  failure_memory: true      # advanced plugin: rank historical fixes
+  worktree_isolation: true  # advanced plugin: isolated git worktrees
+
 # GPU configuration (for multi-agent mode)
 gpu:
   # Remote hosts for GPU allocation (optional)

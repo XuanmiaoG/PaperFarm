@@ -19,6 +19,9 @@ class ResearchConfig:
     web_search: bool = True
     search_interval: int = 5
     remote_hosts: list = field(default_factory=list)
+    enable_gpu_allocation: bool = True
+    enable_failure_memory: bool = True
+    enable_worktree_isolation: bool = True
     agent_config: dict = field(default_factory=dict)
 
 
@@ -35,6 +38,7 @@ def load_config(research_dir: Path) -> ResearchConfig:
     metrics = raw.get("metrics", {}).get("primary", {})
     gpu = raw.get("gpu", {})
     research = raw.get("research", {})
+    runtime = raw.get("runtime", {})
     return ResearchConfig(
         mode=raw.get("mode", "autonomous"),
         timeout=exp.get("timeout", 600),
@@ -47,5 +51,8 @@ def load_config(research_dir: Path) -> ResearchConfig:
         web_search=research.get("web_search", True),
         search_interval=research.get("search_interval", 5),
         remote_hosts=gpu.get("remote_hosts", []),
+        enable_gpu_allocation=runtime.get("gpu_allocation", True),
+        enable_failure_memory=runtime.get("failure_memory", True),
+        enable_worktree_isolation=runtime.get("worktree_isolation", True),
         agent_config=raw.get("agents", {}),
     )

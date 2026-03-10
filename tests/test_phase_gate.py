@@ -36,6 +36,10 @@ def test_phase_gate_detects_transition(research_dir):
     ctrl = json.loads(ctrl_path.read_text())
     assert ctrl["paused"] is True
     assert "training" in ctrl["pause_reason"]
+    event_log = research_dir / "events.jsonl"
+    records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+    assert records[-1]["phase"] == "control"
+    assert records[-1]["command"] == "pause"
 
 
 def test_phase_gate_noop_in_autonomous(research_dir):

@@ -88,7 +88,7 @@ def test_init_fails_without_git_directory(tmp_path):
 
 
 def test_init_creates_shared_files(tmp_path):
-    """Verify init creates idea_pool.json, activity.json, control.json."""
+    """Verify init creates idea_pool.json, activity.json, control.json, and events.jsonl."""
     # Need .git for the new validation
     (tmp_path / ".git").mkdir()
     do_init(repo_path=tmp_path, tag="test")
@@ -106,6 +106,10 @@ def test_init_creates_shared_files(tmp_path):
     assert control.exists()
     data = json.loads(control.read_text())
     assert data == {"paused": False, "skip_current": False}
+
+    events = research / "events.jsonl"
+    assert events.exists()
+    assert events.read_text() == ""
 
     # Multi-agent templates rendered
     assert (research / "idea_program.md").exists()

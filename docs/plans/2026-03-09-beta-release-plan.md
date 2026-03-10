@@ -1,5 +1,7 @@
 # Beta Release Implementation Plan
 
+> **Historical note (2026-03-10):** This plan predates the `IdeaBacklog` / `IdeaPool` split. Any examples using `claimed_by`, `assigned_experiment`, or claim-token metadata now describe parallel-worker mode only, not the default serial backlog path.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Bring open-researcher to beta quality by implementing all README-promised features across 4 independent modules.

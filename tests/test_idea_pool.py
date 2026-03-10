@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
-from open_researcher.idea_pool import IdeaPool
+from open_researcher.idea_pool import IdeaBacklog, IdeaPool
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def pool_file(tmp_path):
 
 @pytest.fixture
 def pool(pool_file):
-    return IdeaPool(pool_file)
+    return IdeaBacklog(pool_file)
 
 
 def test_add_idea(pool, pool_file):
@@ -29,6 +29,9 @@ def test_add_idea(pool, pool_file):
     assert idea["status"] == "pending"
     assert idea["priority"] == 1
     assert idea["id"].startswith("idea-")
+    assert "claimed_by" not in idea
+    assert "claim_token" not in idea
+    assert "assigned_experiment" not in idea
 
 
 def test_list_by_status(pool):
@@ -42,10 +45,10 @@ def test_list_by_status(pool):
 def test_update_status(pool):
     pool.add("idea A", priority=1)
     ideas = pool.list_by_status("pending")
-    pool.update_status(ideas[0]["id"], "running", experiment=1)
+    pool.update_status(ideas[0]["id"], "running")
     running = pool.list_by_status("running")
     assert len(running) == 1
-    assert running[0]["assigned_experiment"] == 1
+    assert "assigned_experiment" not in running[0]
 
 
 def test_mark_done(pool):
@@ -95,46 +98,137 @@ def test_add_idea_default_gpu_hint(pool, pool_file):
 
 
 def test_claim_idea_atomic(pool):
-    pool.add("idea A", priority=1)
-    pool.add("idea B", priority=2)
-    claimed = pool.claim_idea(worker_id="w-001")
+    concurrent_pool = IdeaPool(pool.path)
+    concurrent_pool.add("idea A", priority=1)
+    concurrent_pool.add("idea B", priority=2)
+    claimed = concurrent_pool.claim_idea(worker_id="w-001")
     assert claimed is not None
     assert claimed["status"] == "running"
     assert claimed["claimed_by"] == "w-001"
     assert claimed["claim_token"].startswith("claim-")
     first_seq = int(claimed["claim_token_seq"])
-    claimed2 = pool.claim_idea(worker_id="w-002")
+    claimed2 = concurrent_pool.claim_idea(worker_id="w-002")
     assert claimed2 is not None
     assert claimed2["id"] != claimed["id"]
     assert int(claimed2["claim_token_seq"]) > first_seq
 
 
 def test_mark_done_rejects_stale_claim_token(pool):
-    pool.add("idea A", priority=1)
-    claim = pool.claim_idea(worker_id="w-001")
+    concurrent_pool = IdeaPool(pool.path)
+    concurrent_pool.add("idea A", priority=1)
+    claim = concurrent_pool.claim_idea(worker_id="w-001")
     assert claim is not None
 
-    stale_ok = pool.mark_done(
+    stale_ok = concurrent_pool.mark_done(
         claim["id"], metric_value=1.23, verdict="kept", claim_token="stale-token"
     )
     assert stale_ok is False
-    assert len(pool.list_by_status("done")) == 0
+    assert len(concurrent_pool.list_by_status("done")) == 0
 
-    accepted = pool.mark_done(
+    accepted = concurrent_pool.mark_done(
         claim["id"],
         metric_value=1.23,
         verdict="kept",
         claim_token=claim["claim_token"],
     )
     assert accepted is True
-    done = pool.list_by_status("done")
+    done = concurrent_pool.list_by_status("done")
     assert len(done) == 1
     assert done[0]["result"]["metric_value"] == 1.23
+    assert done[0]["finished_claim_token"] == claim["claim_token"]
+
+
+def test_parallel_pool_tracks_assigned_experiment(tmp_path):
+    pool_file = tmp_path / "parallel-idea-pool.json"
+    pool_file.write_text(json.dumps({"ideas": []}))
+    pool = IdeaPool(pool_file)
+    pool.add("idea A", priority=1)
+    claim = pool.claim_idea(worker_id="w-001")
+    assert claim is not None
+
+    ok = pool.update_status(
+        claim["id"],
+        "running",
+        experiment=8,
+        claim_token=claim["claim_token"],
+    )
+
+    assert ok is True
+    running = pool.list_by_status("running")
+    assert running[0]["assigned_experiment"] == 8
 
 
 def test_claim_idea_none_available(pool):
-    result = pool.claim_idea(worker_id="w-001")
+    result = IdeaPool(pool.path).claim_idea(worker_id="w-001")
     assert result is None
+
+
+def test_basic_backlog_mark_done_does_not_persist_claim_metadata(pool_file):
+    pool = IdeaBacklog(pool_file)
+    pool.add("idea A", priority=1)
+    idea_id = pool.list_by_status("pending")[0]["id"]
+
+    pool.mark_done(idea_id, metric_value=1.0, verdict="kept")
+
+    done = pool.list_by_status("done")[0]
+    assert "claim_token" not in done
+    assert "claim_token_seq" not in done
+    assert "finished_claim_token" not in done
+    assert "finished_claim_token_seq" not in done
+
+
+def test_basic_backlog_prunes_legacy_parallel_metadata(pool_file):
+    pool_file.write_text(
+        json.dumps(
+            {
+                "ideas": [
+                    {
+                        "id": "idea-001",
+                        "description": "legacy idea",
+                        "status": "running",
+                        "priority": 1,
+                        "category": "general",
+                        "source": "user",
+                        "gpu_hint": "auto",
+                        "assigned_experiment": 12,
+                        "claimed_by": "worker-0",
+                        "claim_token": "claim-000000012:worker-0",
+                        "claim_token_seq": 12,
+                        "finished_claim_token": "claim-000000011:worker-0",
+                        "finished_claim_token_seq": 11,
+                        "result": None,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            }
+        )
+    )
+    pool = IdeaBacklog(pool_file)
+
+    ok = pool.update_status("idea-001", "running")
+
+    assert ok is True
+    running = pool.list_by_status("running")[0]
+    assert "assigned_experiment" not in running
+    assert "claimed_by" not in running
+    assert "claim_token" not in running
+    assert "finished_claim_token" not in running
+
+
+def test_basic_backlog_does_not_accept_parallel_update_kwargs(pool):
+    pool.add("idea A", priority=1)
+    idea_id = pool.list_by_status("pending")[0]["id"]
+
+    with pytest.raises(TypeError):
+        pool.update_status(idea_id, "running", experiment=1)
+
+
+def test_basic_backlog_does_not_accept_parallel_mark_done_kwargs(pool):
+    pool.add("idea A", priority=1)
+    idea_id = pool.list_by_status("pending")[0]["id"]
+
+    with pytest.raises(TypeError):
+        pool.mark_done(idea_id, metric_value=1.0, verdict="kept", claim_token="claim-1")
 
 
 def test_concurrent_adds(pool_file):

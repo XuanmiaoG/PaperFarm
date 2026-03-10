@@ -1,11 +1,10 @@
-"""Tests for headless start flow."""
+"""Tests for headless bootstrap flow."""
 
+import json
 import subprocess
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import json
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -41,7 +40,7 @@ def test_headless_scout_phase(tmp_path):
         )
 
     output = buf.getvalue()
-    lines = [json.loads(l) for l in output.strip().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in output.strip().splitlines() if line.strip()]
     events = [r["event"] for r in lines]
     assert "session_started" in events
     assert "scout_started" in events
@@ -79,7 +78,7 @@ def test_headless_max_experiments_limit(tmp_path):
         )
 
     output = buf.getvalue()
-    lines = [json.loads(l) for l in output.strip().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in output.strip().splitlines() if line.strip()]
     events = [r["event"] for r in lines]
     assert "limit_reached" in events
 
@@ -109,7 +108,7 @@ def test_headless_single_agent(tmp_path):
         )
 
     output = buf.getvalue()
-    lines = [json.loads(l) for l in output.strip().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in output.strip().splitlines() if line.strip()]
     events = [r["event"] for r in lines]
     assert "session_started" in events
     assert "scout_started" in events
@@ -142,7 +141,7 @@ def test_headless_scout_failure_stops(tmp_path):
         )
 
     output = buf.getvalue()
-    lines = [json.loads(l) for l in output.strip().splitlines() if l.strip()]
+    lines = [json.loads(line) for line in output.strip().splitlines() if line.strip()]
     events = [r["event"] for r in lines]
     assert "scout_failed" in events
     assert "session_completed" not in events

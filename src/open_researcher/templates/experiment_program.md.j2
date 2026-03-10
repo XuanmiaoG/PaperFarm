@@ -18,12 +18,13 @@ You are the **Experiment Agent**. You pick ideas from the pool and run experimen
 | File | Access | Purpose |
 |------|--------|---------|
 | `.research/experiment_progress.json` | Read/Write | **Your resume state — update after each phase** |
-| `.research/idea_pool.json` | Read/Write | Claim ideas, update results |
+| `.research/idea_pool.json` | Read/Write | Read the idea backlog, run one idea at a time, update results |
 | `.research/activity.json` | Read/Write | Update `experiment_agent` status |
 | `.research/results.tsv` | Write | Record via `.research/scripts/record.py` |
 | `.research/config.yaml` | Read | Experiment settings |
 | `.research/evaluation.md` | Read/Write | Evaluation procedure (fill once in Phase 1) |
-| `.research/control.json` | Read | Pause/skip signals |
+| `.research/events.jsonl` | Read | Canonical runtime/control event stream |
+| `.research/control.json` | Read | Compatibility snapshot of pause/skip state |
 
 ## Status Updates
 
@@ -57,7 +58,8 @@ Before each action, update `.research/activity.json`:
 ## Phase 3: Experiment Loop (when progress.phase == "experimenting")
 
 ### 3a. Check Control
-- Read `.research/control.json`
+- Read `.research/events.jsonl` for the latest `control_command` events
+- Use `.research/control.json` as the quick snapshot if needed
 - If `paused: true`: update status to `paused`, sleep 10s, recheck
 - If `skip_current: true`: skip to next idea, reset flag
 

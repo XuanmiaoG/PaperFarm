@@ -20,7 +20,7 @@
 
 ## ✨ Key Features
 
-- **🚀 Zero-Config Start**: One command (`open-researcher start`) does everything — init, analyze your project, confirm the plan, then run experiments autonomously.
+- **🚀 One `run` Command**: `open-researcher run` bootstraps a new workflow when `.research/` is missing, or resumes an existing workflow when it already exists.
 
 - **🤖 Multi-Agent Support**: Works with Claude Code, Codex CLI, Aider, and OpenCode — auto-detects the first installed agent, or pick your own.
 
@@ -40,13 +40,13 @@
 
 ## 🚀 Quick Start
 
-### Zero-Config Start (Recommended)
+### One-Command Workflow (Recommended)
 
 ```bash
 pip install open-researcher
 
 cd your-project
-open-researcher start
+open-researcher run
 ```
 
 This launches a **3-phase flow**:
@@ -60,7 +60,7 @@ This launches a **3-phase flow**:
 Run without TUI — perfect for scripts, CI, or monitoring with external tools:
 
 ```bash
-open-researcher start --headless --goal "reduce val_loss below 0.3" --max-experiments 20
+open-researcher run --mode headless --goal "reduce val_loss below 0.3" --max-experiments 20
 ```
 
 Outputs structured **JSON Lines** to stdout, one event per line:
@@ -71,7 +71,7 @@ Outputs structured **JSON Lines** to stdout, one event per line:
 {"ts": "2026-03-10T12:50:00Z", "level": "info", "phase": "done", "event": "limit_reached", "detail": "Max experiments (20) reached"}
 ```
 
-Also writes to `.research/events.jsonl` for persistent logging.
+Also writes to `.research/events.jsonl` for persistent logging. Interactive mode now writes the same canonical event stream, so TUI and headless share one runtime log.
 
 ### Manual Step-by-Step
 
@@ -109,9 +109,10 @@ Open Researcher generates a `.research/` directory in your repo with everything 
 | `research-strategy.md` | Agent fills: research direction and focus areas |
 | `literature.md` | Agent fills: related work and prior art |
 | `evaluation.md` | Agent fills: how to measure improvement |
-| `idea_pool.json` | Idea queue with priority, status, claims |
+| `idea_pool.json` | Idea backlog with priority, status, and optional parallel-worker claim/assignment metadata |
 | `results.tsv` | Experiment log (timestamp, commit, metrics, status) |
-| `control.json` | Runtime control commands (pause/resume/skip) |
+| `events.jsonl` | Canonical runtime event stream for research + control |
+| `control.json` | Compatibility snapshot of pause/resume/skip state |
 | `activity.json` | Real-time agent status for TUI display |
 
 </details>
@@ -139,9 +140,9 @@ Phase 3: Human Review (TUI only, auto-confirmed in headless)
 
 Phase 4: Experiment Loop
   ├─ Single-Agent: runs full program.md
-  └─ Dual-Agent (--multi):
-     ├─ Idea Agent: generates 1 hypothesis → idea_pool.json
-     └─ Experiment Agent: implements, tests, evaluates → results.tsv
+  └─ Research Loop (--workers N):
+     ├─ Internal idea generation proposes hypotheses → idea_pool.json
+     ├─ Internal experiment execution implements, tests, evaluates → results.tsv
      └─ Repeat until no ideas left or --max-experiments reached
 ```
 
@@ -160,7 +161,7 @@ Each experiment is a git commit. Successful experiments stay; failed ones are ro
 | **Timeout watchdog** | Kills experiments exceeding the configured time limit |
 | **Crash counter** | Auto-pauses after N consecutive crashes (default: 3) |
 | **Max experiments** | Stops after N experiments (`--max-experiments` or `config.yaml`) |
-| **Control plane** | Linearized pause / resume / skip commands via `control.json` |
+| **Control plane** | Pause / resume / skip commands are event-backed in `events.jsonl`, with `control.json` kept as a compatibility snapshot |
 | **Failure memory** | Persistent ledger of past failures, ranked by recovery success |
 | **Phase gate** | In collaborative mode, pauses between phase transitions |
 | **Parallel workers** | Run experiments across multiple GPUs in isolated worktrees |
@@ -256,7 +257,7 @@ open-researcher demo
 
 # Then use it for real
 cd your-project
-open-researcher start
+open-researcher run
 ```
 
 ### Option B: From source (for development)
@@ -287,12 +288,11 @@ make lint   # run linter
 
 | Command | What It Does |
 |:---|:---|
-| `start` | Zero-config: Scout → Review → Experiment (TUI) |
-| `start --multi` | Dual-agent mode (idea + experiment agents) |
-| `start --headless --goal "..." --max-experiments N` | Headless JSON Lines mode |
+| `run` | Primary command: bootstrap if needed, otherwise run the existing workflow |
+| `run --mode headless --goal "..." --max-experiments N` | Headless JSON Lines mode |
+| `run --workers N` | Hide internal agent split and set experiment worker count |
+| `start` | Legacy alias for bootstrap mode |
 | `init [--tag NAME]` | Initialize `.research/` directory |
-| `run [--agent NAME]` | Launch AI agent with TUI dashboard |
-| `run --multi` | Dual-agent mode (idea + experiment) |
 | `demo` | Try the TUI with sample data (no agent needed) |
 
 </details>
@@ -369,6 +369,11 @@ research:
   web_search: true            # let agent use web search if available
   search_interval: 5          # refresh ideas every N experiments
 
+runtime:
+  gpu_allocation: true        # advanced plugin: GPU scheduling/allocation
+  failure_memory: true        # advanced plugin: rank historical fixes
+  worktree_isolation: true    # advanced plugin: isolated git worktrees
+
 gpu:
   remote_hosts: []            # for multi-agent GPU allocation
 
@@ -391,8 +396,7 @@ agents:                       # per-agent overrides (optional)
 | Module | Description |
 |:---|:---|
 | `cli.py` | CLI entry point, all commands (Typer) |
-| `start_cmd.py` | Zero-config start flow (Scout → Review → Experiment) |
-| `run_cmd.py` | Agent launch & TUI integration |
+| `run_cmd.py` | Unified workflow entrypoint: bootstrap flow + existing-workflow runner |
 | `headless.py` | Headless mode (JSON Lines output) |
 | `init_cmd.py` | Initialize `.research/` directory |
 | `config.py` | Configuration parsing |
@@ -423,6 +427,7 @@ agents:                       # per-agent overrides (optional)
 | `widgets.py` | UI components (Stats, Ideas, Charts, Logs, Docs) |
 | `review.py` | Post-Scout review TUI |
 | `modals.py` | Modal dialogs (AddIdea, GPUStatus, Log) |
+| `tui_runner.py` | Shared Textual session lifecycle for bootstrap and existing-workflow entrypoints |
 | `styles.css` | CSS styling |
 
 </details>
@@ -433,7 +438,10 @@ agents:                       # per-agent overrides (optional)
 
 | Module | Description |
 |:---|:---|
-| `idea_pool.py` | Idea pool management (atomic reads/writes, file locking) |
+| `idea_pool.py` | Serial idea backlog plus parallel claim handling for workers |
+| `research_loop.py` | Shared Scout → Idea → Experiment core loop |
+| `research_events.py` | Typed event contract shared by TUI and headless |
+| `event_journal.py` | Shared JSONL journal for runtime and control events |
 | `control_plane.py` | Runtime control (pause/resume/skip) |
 | `failure_memory.py` | Failure memory ledger (categorize, improve fixes) |
 | `worker.py` | Parallel worker management (multi-GPU) |
@@ -455,6 +463,11 @@ See [`examples/`](examples/) for complete setups:
 - **[nanoGPT](examples/nanogpt/)** — Reduce validation loss in character-level language model training
 - **[Liger-Kernel](examples/liger-kernel/)** — Optimize Triton GPU kernels
 - **[HF GLUE](examples/hf-glue/)** — Improve HuggingFace Transformers fine-tuning
+- **[CIFAR-10 Speedrun](examples/cifar10-speedrun/)** — Maximize CIFAR-10 image classification accuracy
+- **[YOLO Tiny](examples/yolo-tiny/)** — Optimize YOLOv8 object detection on COCO8
+- **[Whisper Fine-tune](examples/whisper-finetune/)** — Reduce Whisper speech recognition word error rate
+- **[CartPole RL](examples/cartpole/)** — Maximize CartPole-v1 reinforcement learning reward
+- **[Code Perf](examples/code-perf/)** — Optimize Python JSON parser throughput (non-ML)
 
 ---
 

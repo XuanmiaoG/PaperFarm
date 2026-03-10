@@ -80,8 +80,6 @@ def _build_idea_pool() -> dict:
             "priority": idea_data["priority"],
             "status": idea_data["status"],
             "gpu_hint": "auto",
-            "claimed_by": f"worker-{i % 2}" if idea_data["status"] in ("done", "running") else None,
-            "assigned_experiment": i + 16 if idea_data["status"] == "done" else None,
             "result": idea_data["result"],
             "created_at": (now - timedelta(hours=10 - i)).isoformat(),
         }
@@ -172,6 +170,7 @@ def _populate_research(research_dir: Path) -> None:
     (research_dir / "idea_pool.json").write_text(json.dumps(_build_idea_pool(), indent=2))
     (research_dir / "activity.json").write_text(json.dumps(_build_activity(), indent=2))
     (research_dir / "control.json").write_text(json.dumps({"paused": False, "skip_current": False}))
+    (research_dir / "events.jsonl").write_text("")
     (research_dir / "experiment_progress.json").write_text(
         json.dumps({"phase": "experimenting", "experiment_count": 15})
     )

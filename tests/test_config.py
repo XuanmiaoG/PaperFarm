@@ -52,6 +52,9 @@ def test_load_config(research_dir):
     assert cfg.web_search is False
     assert cfg.search_interval == 10
     assert cfg.remote_hosts == ["host1:8080", "host2:8080"]
+    assert cfg.enable_gpu_allocation is True
+    assert cfg.enable_failure_memory is True
+    assert cfg.enable_worktree_isolation is True
 
 
 def test_load_config_defaults(research_dir):
@@ -71,6 +74,9 @@ def test_load_config_defaults(research_dir):
     assert cfg.web_search is True
     assert cfg.search_interval == 5
     assert cfg.remote_hosts == []
+    assert cfg.enable_gpu_allocation is True
+    assert cfg.enable_failure_memory is True
+    assert cfg.enable_worktree_isolation is True
 
 
 def test_load_config_max_experiments(research_dir):
@@ -109,3 +115,24 @@ def test_load_config_missing_file(research_dir):
     assert cfg.web_search is True
     assert cfg.search_interval == 5
     assert cfg.remote_hosts == []
+    assert cfg.enable_gpu_allocation is True
+    assert cfg.enable_failure_memory is True
+    assert cfg.enable_worktree_isolation is True
+
+
+def test_load_config_runtime_plugin_toggles(research_dir):
+    config_data = {
+        "runtime": {
+            "gpu_allocation": False,
+            "failure_memory": False,
+            "worktree_isolation": False,
+        },
+    }
+    config_path = research_dir / "config.yaml"
+    config_path.write_text(yaml.dump(config_data))
+
+    cfg = load_config(research_dir)
+
+    assert cfg.enable_gpu_allocation is False
+    assert cfg.enable_failure_memory is False
+    assert cfg.enable_worktree_isolation is False

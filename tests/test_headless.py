@@ -2,7 +2,6 @@
 
 import json
 from io import StringIO
-from pathlib import Path
 
 from open_researcher.headless import HeadlessLogger
 

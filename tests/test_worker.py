@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from open_researcher.idea_pool import IdeaPool
 from open_researcher.worker import WorkerManager
+from open_researcher.worker_plugins import WorkerRuntimePlugins
 
 
 def _make_research_dir(tmp: Path) -> Path:
@@ -261,3 +262,45 @@ def test_worker_manager_stop_signal():
         # Not all 19 ideas should have been processed
         summary = idea_pool.summary()
         assert summary["done"] + summary["skipped"] + summary["running"] < 19
+
+
+def test_worker_manager_can_disable_advanced_plugins():
+    """WorkerManager should run in the main repo when plugins are explicitly disabled."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+
+        ideas = [
+            {"id": "idea-001", "description": "No plugins", "status": "pending",
+             "priority": 1, "claimed_by": None, "assigned_experiment": None,
+             "result": None, "source": "original", "category": "general",
+             "gpu_hint": "auto", "created_at": "2026-01-01T00:00:00"},
+        ]
+        idea_pool = _make_idea_pool(research, ideas)
+        workdirs_used = []
+
+        def mock_agent_factory():
+            agent = MagicMock()
+
+            def run_side_effect(workdir, on_output=None, program_file="program.md", **kwargs):
+                workdirs_used.append(str(workdir))
+                return 0
+
+            agent.run.side_effect = run_side_effect
+            return agent
+
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=mock_agent_factory,
+            max_workers=1,
+            on_output=lambda line: None,
+            runtime_plugins=WorkerRuntimePlugins(),
+        )
+
+        wm.start()
+        wm.join(timeout=5)
+
+        assert workdirs_used == [str(tmp_path)]

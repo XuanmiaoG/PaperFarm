@@ -6,14 +6,12 @@ from pathlib import Path
 from typing import Callable
 
 from open_researcher.activity import ActivityMonitor
-from open_researcher.failure_memory import (
-    MEMORY_POLICY,
-    FailureMemoryLedger,
-    classify_failure,
-)
 from open_researcher.gpu_manager import GPUManager
 from open_researcher.idea_pool import IdeaPool
-from open_researcher.worktree import create_worktree, remove_worktree
+from open_researcher.worker_plugins import (
+    WorkerRuntimePlugins,
+    build_legacy_worker_plugins,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +23,15 @@ class WorkerManager:
         self,
         repo_path: Path,
         research_dir: Path,
-        gpu_manager: GPUManager,
+        gpu_manager: GPUManager | None,
         idea_pool: IdeaPool,
         agent_factory: Callable,
         max_workers: int,
         on_output: Callable[[str], None],
+        runtime_plugins: WorkerRuntimePlugins | None = None,
     ):
         self.repo_path = repo_path
         self.research_dir = research_dir
-        self.gpu_manager = gpu_manager
         self.idea_pool = idea_pool
         self.agent_factory = agent_factory
         self.max_workers = max_workers
@@ -41,34 +39,30 @@ class WorkerManager:
         self._stop = threading.Event()
         self._workers: list[threading.Thread] = []
         self._activity = ActivityMonitor(research_dir)
-        self._failure_memory = FailureMemoryLedger(
-            research_dir / "failure_memory_ledger.json"
+        self._plugins = runtime_plugins or build_legacy_worker_plugins(
+            repo_path=repo_path,
+            research_dir=research_dir,
+            gpu_manager=gpu_manager,
         )
 
     def start(self) -> None:
         """Start worker threads based on available GPUs."""
         self._stop.clear()
         self._workers.clear()
-        try:
-            gpus = self.gpu_manager.refresh()
-        except Exception:
-            gpus = []
-        available = [g for g in gpus if g.get("allocated_to") is None]
-        if available:
-            n_workers = min(self.max_workers, len(available)) if self.max_workers > 0 else len(available)
+        slots: list[dict | None]
+        if self._plugins.gpu_allocator is not None:
+            slots = self._plugins.gpu_allocator.worker_slots(self.max_workers)
         else:
-            # 无可用 GPU 时限制为最多 1 个 worker
-            n_workers = min(self.max_workers, 1) if self.max_workers > 0 else 1
-        n_workers = max(n_workers, 1)  # at least 1 worker
+            n_workers = max(self.max_workers, 1) if self.max_workers > 0 else 1
+            slots = [None] * n_workers
 
-        for i in range(n_workers):
-            gpu = available[i] if i < len(available) else None
+        for i, gpu in enumerate(slots):
             t = threading.Thread(
                 target=self._worker_loop, args=(i, gpu), daemon=True
             )
             t.start()
             self._workers.append(t)
-        self.on_output(f"[system] Started {n_workers} worker(s)")
+        self.on_output(f"[system] Started {len(slots)} worker(s)")
 
     def stop(self) -> None:
         """Signal all workers to stop."""
@@ -81,20 +75,14 @@ class WorkerManager:
 
     def _worker_loop(self, worker_id: int, gpu: dict | None) -> None:
         wid = f"worker-{worker_id}"
-        gpu_env: dict[str, str] = {}
-        actual_host: str | None = None
-        actual_device: int | None = None
-
-        if gpu:
-            # 使用 allocate 的返回值作为实际分配结果
-            alloc_result = self.gpu_manager.allocate(tag=wid)
-            if alloc_result is not None:
-                actual_host, actual_device = alloc_result
-            else:
-                # allocate 未能分配，回退到已选的 gpu 信息
-                actual_host, actual_device = gpu["host"], gpu["device"]
-            gpu_env = {"CUDA_VISIBLE_DEVICES": str(actual_device)}
-            self.on_output(f"[{wid}] Allocated GPU {actual_host}:{actual_device}")
+        allocation = (
+            self._plugins.gpu_allocator.allocate(wid, gpu)
+            if self._plugins.gpu_allocator is not None
+            else None
+        )
+        gpu_env = allocation.env if allocation is not None else {}
+        for line in allocation.log_lines if allocation is not None else []:
+            self.on_output(line)
 
         while not self._stop.is_set():
             idea = self.idea_pool.claim_idea(wid)
@@ -104,16 +92,22 @@ class WorkerManager:
 
             idea_description = str(idea.get("description", ""))
             claim_token = str(idea.get("claim_token", "")).strip()
-            failure_class = classify_failure(idea_description)
-            ranked_fixes = self._failure_memory.rank_fixes(failure_class)
-            ranked_fix_actions = [
-                str(item.get("fix_action", "")).strip()
-                for item in ranked_fixes
-                if str(item.get("fix_action", "")).strip()
-            ]
-            first_fix_action = (
-                ranked_fix_actions[0] if ranked_fix_actions else "generate_new_plan"
+            memory_context = (
+                self._plugins.failure_memory.prepare(idea_description, wid)
+                if self._plugins.failure_memory is not None
+                else None
             )
+            failure_class = (
+                memory_context.failure_class if memory_context is not None else "general_failure"
+            )
+            ranked_fix_actions = (
+                memory_context.ranked_fix_actions if memory_context is not None else []
+            )
+            first_fix_action = (
+                memory_context.first_fix_action if memory_context is not None else "generate_new_plan"
+            )
+            for line in memory_context.log_lines if memory_context is not None else []:
+                self.on_output(line)
 
             self._activity.update_worker(
                 "experiment_agent",
@@ -121,26 +115,22 @@ class WorkerManager:
                 status="running",
                 idea=idea_description[:50],
                 failure_class=failure_class,
-                memory_policy=MEMORY_POLICY,
+                memory_policy="rank_historical_success" if memory_context is not None else "disabled",
                 ranked_fixes=ranked_fix_actions[:3],
                 first_fix_action=first_fix_action,
             )
             self.on_output(f"[{wid}] Running: {idea_description[:60]}")
-            self.on_output(
-                f"[{wid}] Memory policy {MEMORY_POLICY}: first remediation action {first_fix_action}"
-            )
             if gpu_env:
                 self.on_output(f"[{wid}] Using GPU env: {gpu_env}")
 
-            # Create isolated worktree for this experiment
-            wt_path = None
-            workdir = self.repo_path  # fallback if worktree creation fails
-            try:
-                wt_path = create_worktree(self.repo_path, f"{wid}-{idea['id']}")
-                workdir = wt_path
-                self.on_output(f"[{wid}] Worktree created: {wt_path.name}")
-            except Exception as exc:
-                self.on_output(f"[{wid}] Worktree creation failed ({exc}), running in main repo")
+            workspace = (
+                self._plugins.workspace_isolation.acquire(wid, str(idea["id"]))
+                if self._plugins.workspace_isolation is not None
+                else None
+            )
+            workdir = workspace.workdir if workspace is not None else self.repo_path
+            for line in workspace.log_lines if workspace is not None else []:
+                self.on_output(line)
 
             # Create agent and run in isolated worktree
             agent = self.agent_factory()
@@ -148,7 +138,9 @@ class WorkerManager:
             try:
                 run_env = {
                     **gpu_env,
-                    "OPEN_RESEARCHER_MEMORY_POLICY": MEMORY_POLICY,
+                    "OPEN_RESEARCHER_MEMORY_POLICY": (
+                        "rank_historical_success" if memory_context is not None else "disabled"
+                    ),
                     "OPEN_RESEARCHER_FAILURE_CLASS": failure_class,
                     "OPEN_RESEARCHER_RANKED_FIXES": ",".join(ranked_fix_actions[:3]),
                     "OPEN_RESEARCHER_FIRST_FIX_ACTION": first_fix_action,
@@ -191,27 +183,17 @@ class WorkerManager:
                 run_code = 1
             finally:
                 try:
-                    self._failure_memory.record(
-                        failure_class=failure_class,
-                        fix_action=first_fix_action,
-                        verification_result="pass" if run_code == 0 else "fail",
-                        recovery_iterations=1 if run_code == 0 else 2,
-                    )
+                    if self._plugins.failure_memory is not None and memory_context is not None:
+                        self._plugins.failure_memory.record(memory_context, run_code)
                 except Exception as exc:
                     logger.debug("Failure memory record failed: %s", exc)
-                # Always clean up worktree
-                if wt_path is not None:
-                    try:
-                        remove_worktree(self.repo_path, wt_path)
+                if workspace is not None:
+                    workspace.cleanup()
+                    if workdir != self.repo_path:
                         self.on_output(f"[{wid}] Worktree cleaned up")
-                    except Exception as exc:
-                        logger.debug("Worktree cleanup failed: %s", exc)
 
         self._activity.update_worker(
             "experiment_agent", wid, status="idle"
         )
-        if gpu and actual_host is not None and actual_device is not None:
-            try:
-                self.gpu_manager.release(actual_host, actual_device)
-            except Exception:
-                pass
+        if self._plugins.gpu_allocator is not None and allocation is not None:
+            self._plugins.gpu_allocator.release(allocation)

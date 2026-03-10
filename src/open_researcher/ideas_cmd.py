@@ -6,13 +6,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from open_researcher.idea_pool import IdeaPool
+from open_researcher.idea_pool import IdeaBacklog
 
 ideas_app = typer.Typer(help="Manage the idea pool.")
 
 
-def _get_pool() -> IdeaPool:
-    return IdeaPool(Path.cwd() / ".research" / "idea_pool.json")
+def _get_pool() -> IdeaBacklog:
+    return IdeaBacklog(Path.cwd() / ".research" / "idea_pool.json")
 
 
 @ideas_app.command("list")

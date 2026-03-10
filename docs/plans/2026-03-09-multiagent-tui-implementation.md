@@ -1,5 +1,7 @@
 # Multi-Agent + Interactive TUI Implementation Plan
 
+> **Historical note (2026-03-10):** This implementation plan predates the `IdeaBacklog` / `IdeaPool` split. Any examples using `claimed_by`, `assigned_experiment`, or claim-token metadata now describe parallel-worker mode only, not the default serial backlog path.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Replace the single-agent Rich Live TUI with a dual-agent (Idea + Experiment) architecture and a Textual-based interactive terminal UI with full keyboard control, GPU management, and file-based agent coordination.

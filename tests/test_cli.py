@@ -83,18 +83,103 @@ def test_start_help():
 
 
 def test_start_headless_requires_goal():
-    """start --headless without --goal should fail."""
+    """start --mode headless without --goal should fail."""
     with runner.isolated_filesystem():
         Path(".git").mkdir()
-        result = runner.invoke(app, ["start", "--headless"])
+        result = runner.invoke(app, ["start", "--mode", "headless"])
         assert result.exit_code != 0
         assert "goal" in result.stdout.lower() or "goal" in str(result.exception).lower()
 
 
 def test_start_headless_help():
-    """start --help should show --headless and --max-experiments flags."""
+    """start --help should show high-level mode and worker flags."""
     result = runner.invoke(app, ["start", "--help"])
     assert result.exit_code == 0
-    assert "--headless" in result.stdout
+    assert "--mode" in result.stdout
+    assert "--workers" in result.stdout
     assert "--max-experiments" in result.stdout
     assert "--goal" in result.stdout
+
+
+def test_legacy_start_flags_are_hidden_from_help():
+    result = runner.invoke(app, ["start", "--help"])
+    assert result.exit_code == 0
+    assert "--multi" not in result.stdout
+    assert "--idea-agent" not in result.stdout
+    assert "--exp-agent" not in result.stdout
+    assert "--headless" not in result.stdout
+
+
+def test_run_help_shows_workers_not_multi():
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--workers" in result.stdout
+    assert "--mode" in result.stdout
+    assert "--goal" in result.stdout
+    assert "--max-experiments" in result.stdout
+    assert "--multi" not in result.stdout
+
+
+def test_run_without_research_bootstraps_to_start_flow():
+    with runner.isolated_filesystem():
+        Path(".git").mkdir()
+        from unittest.mock import patch
+
+        with patch("open_researcher.run_cmd.do_start", return_value=None) as mock_start:
+            result = runner.invoke(app, ["run"])
+
+        assert result.exit_code == 0
+        mock_start.assert_called_once()
+
+
+def test_run_mode_headless_routes_to_headless_bootstrap():
+    with runner.isolated_filesystem():
+        Path(".git").mkdir()
+        from unittest.mock import patch
+
+        with patch("open_researcher.headless.do_start_headless", return_value=None) as mock_headless:
+            result = runner.invoke(
+                app,
+                ["run", "--mode", "headless", "--goal", "test goal", "--workers", "2"],
+            )
+
+        assert result.exit_code == 0
+        mock_headless.assert_called_once()
+        kwargs = mock_headless.call_args.kwargs
+        assert kwargs["workers"] == 2
+        assert kwargs["multi"] is True
+
+
+def test_start_mode_headless_routes_to_headless_entrypoint():
+    with runner.isolated_filesystem():
+        Path(".git").mkdir()
+        from unittest.mock import patch
+
+        with patch("open_researcher.headless.do_start_headless", return_value=None) as mock_headless:
+            result = runner.invoke(
+                app,
+                ["start", "--mode", "headless", "--goal", "test goal", "--workers", "2"],
+            )
+
+        assert result.exit_code == 0
+        mock_headless.assert_called_once()
+        kwargs = mock_headless.call_args.kwargs
+        assert kwargs["workers"] == 2
+        assert kwargs["multi"] is True
+
+
+def test_run_workers_routes_to_multi_entrypoint():
+    with runner.isolated_filesystem():
+        Path(".git").mkdir()
+        result = runner.invoke(app, ["init", "--tag", "clitest"])
+        assert result.exit_code == 0
+
+        from unittest.mock import patch
+
+        with patch("open_researcher.run_cmd.do_run_multi", return_value=None) as mock_multi:
+            result = runner.invoke(app, ["run", "--workers", "1"])
+
+        assert result.exit_code == 0
+        mock_multi.assert_called_once()
+        kwargs = mock_multi.call_args.kwargs
+        assert kwargs["workers"] == 1

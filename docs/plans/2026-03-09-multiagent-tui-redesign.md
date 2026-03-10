@@ -1,5 +1,7 @@
 # Multi-Agent Architecture + Interactive TUI Redesign
 
+> **Historical note (2026-03-10):** This redesign note predates the `IdeaBacklog` / `IdeaPool` split. Any examples using `claimed_by`, `assigned_experiment`, or claim-token metadata now apply only to parallel-worker mode.
+
 ## Goal
 
 Replace the current single-agent + Rich Live TUI with:
