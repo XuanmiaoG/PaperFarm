@@ -1,0 +1,43 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#7aa2f7', 'primaryTextColor': '#c0caf5', 'primaryBorderColor': '#565f89', 'lineColor': '#7dcfff', 'secondaryColor': '#292e42', 'tertiaryColor': '#1a1b26'}}}%%
+
+block-beta
+    columns 1
+
+    block:STATS:1
+        columns 1
+        S["StatsBar: Open Researcher | 3K 2D | best=0.8523"]
+    end
+
+    block:TABS:1
+        columns 5
+        T1["[1] Overview"]
+        T2["[2] Ideas"]
+        T3["[3] Charts"]
+        T4["[4] Logs"]
+        T5["[5] Docs"]
+    end
+
+    block:MAIN:1
+        columns 2
+        block:LEFT
+            columns 1
+            EXP["ExperimentStatusPanel\n▶ [RUNNING]\nidea-003: Add dropout\nimplementing changes...\n████████░░░░ 3/10"]
+            REC["RecentExperiments\n✓ 0.8523  Add batch norm\n✗ 0.8100  Increase LR\n✓ 0.8401  Data augment"]
+        end
+        block:RIGHT
+            columns 1
+            IDEAS["IdeaListPanel\n✓ Cycle 1 | Add batch norm → kept\n▶ Cycle 2 | Add dropout → running\n· Cycle 3 | LR warmup → pending"]
+            CHART["MetricChart\n📈 Metric Trend"]
+        end
+    end
+
+    block:HOTKEY:1
+        columns 1
+        H["[1]-[5] tabs  [p]ause  [s]kip  [a]dd idea  [g]pu  [q]uit"]
+    end
+
+    style S fill:#7aa2f7,color:#1a1b26
+    style T1 fill:#9ece6a,color:#1a1b26
+    style EXP fill:#292e42,color:#c0caf5
+    style IDEAS fill:#292e42,color:#c0caf5
+    style H fill:#1a1b26,color:#565f89

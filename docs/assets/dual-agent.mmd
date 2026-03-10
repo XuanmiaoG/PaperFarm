@@ -1,0 +1,45 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#7aa2f7', 'primaryTextColor': '#c0caf5', 'primaryBorderColor': '#565f89', 'lineColor': '#7dcfff', 'secondaryColor': '#292e42', 'tertiaryColor': '#1a1b26'}}}%%
+
+flowchart LR
+    subgraph IDEA_AGENT["Idea Agent"]
+        IA1["分析项目代码"]
+        IA2["文献调研"]
+        IA3["生成优化想法"]
+        IA1 --> IA2 --> IA3
+    end
+
+    subgraph POOL["idea_pool.json"]
+        direction TB
+        P1["pending 💡"]
+        P2["running ▶"]
+        P3["done ✓ / ✗"]
+    end
+
+    subgraph EXP_AGENT["Experiment Agent"]
+        EA1["领取 idea"]
+        EA2["实现代码修改"]
+        EA3["运行评估"]
+        EA4["判定 keep/discard"]
+        EA1 --> EA2 --> EA3 --> EA4
+    end
+
+    IA3 -->|写入新 idea| P1
+    P1 -->|claim| EA1
+    EA4 -->|更新结果| P3
+
+    subgraph ARTIFACTS["产出"]
+        R1["results.tsv"]
+        R2["git commits\n(kept changes)"]
+        R3[".research/\n文档更新"]
+    end
+
+    EA4 --> R1
+    EA4 --> R2
+    EA4 --> R3
+
+    style IA3 fill:#bb9af7,color:#1a1b26
+    style EA1 fill:#7aa2f7,color:#1a1b26
+    style EA4 fill:#9ece6a,color:#1a1b26
+    style P1 fill:#e0af68,color:#1a1b26
+    style P2 fill:#7dcfff,color:#1a1b26
+    style P3 fill:#565f89,color:#c0caf5
