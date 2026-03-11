@@ -242,6 +242,23 @@ agents:
 
 The interactive UI is now a **research-v1 command center**, not a generic tabbed monitor. It is built around the real runtime objects in `.research/`: frontier rows, hypotheses, evidence, claims, control state, and the shared event stream.
 
+### Screenshots
+
+<p align="center">
+  <img src="imgs/overview.png" alt="Open Researcher overview dashboard" width="100%" />
+</p>
+<p align="center"><em>Overview</em>: research command center with frontier focus, lineage, and live role activity.</p>
+
+<p align="center">
+  <img src="imgs/execution.png" alt="Open Researcher execution dashboard" width="100%" />
+</p>
+<p align="center"><em>Execution</em>: metric trend, run summary, and recent experiment results.</p>
+
+<p align="center">
+  <img src="imgs/docs.png" alt="Open Researcher docs dashboard" width="100%" />
+</p>
+<p align="center"><em>Docs</em>: searchable research documents with grouped navigation and live preview.</p>
+
 ```
 ┌─ OPEN RESEARCHER ─ research-v1 ────────────────────────────────────────┐
 │ Research  branch main  frontier 3  best=0.3290                        │
