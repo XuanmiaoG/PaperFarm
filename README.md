@@ -26,7 +26,7 @@
 
 - **🔬 Scout → Review → Experiment Flow**: AI agent analyzes your codebase, searches related work, designs evaluation metrics, then runs experiments — keeping what works, discarding what doesn't.
 
-- **📊 Rich 5-Tab TUI Dashboard**: Real-time stats, idea pool, metric trend charts, live agent logs with diff coloring, and auto-refreshing docs — all in your terminal.
+- **🖥️ Research Command Center TUI**: A 4-tab `Command / Execution / Logs / Docs` dashboard with frontier focus, collapsible detail drawer, hypothesis lineage, trace-aware logs, and searchable docs navigation.
 
 - **🛡️ Safety First**: Every experiment is an isolated git commit. Failed experiments auto-rollback. Timeout watchdog, crash counter, and max-experiments limit keep things under control.
 
@@ -53,7 +53,7 @@ This launches a **3-phase flow**:
 
 1. **Scout** — AI agent analyzes your codebase, searches related work, designs evaluation metrics
 2. **Review** — You review the analysis in an interactive TUI and confirm or edit the plan
-3. **Experiment** — Agent runs experiments autonomously, keeping what improves metrics
+3. **Experiment** — `Manager -> Critic -> Experiment` runs the research loop autonomously, keeping what improves metrics
 
 ### Headless Mode
 
@@ -207,39 +207,58 @@ agents:
 
 ## 📊 Interactive TUI Dashboard
 
+The interactive UI is now a **research-v1 command center**, not a generic tabbed monitor. It is built around the real runtime objects in `.research/`: frontier rows, hypotheses, evidence, claims, control state, and the shared event stream.
+
 ```
-┌─ Open Researcher ──────────────────────────────────────────────────────┐
-│ Experiments: 15 │ Kept: 10 │ Discarded: 3 │ Crashed: 1 │ Best: 0.329 │
-├─ Overview ─ Ideas ─ Charts ─ Logs ─ Docs ──────────────────────────────┤
-│                                                                        │
-│  ▌ Experiment Agent  experimenting                                     │
-│  ▌ Running: sliding window attention (idea-003)                        │
-│  ▌ ████████████████████░░░░░░░░  62%  (5/8 ideas)                     │
-│                                                                        │
-│  Recent Experiments:                                                   │
-│  #15  final-tune      keep     val_loss=0.329  ↓ Fine-tune LR 1e-5    │
-│  #14  kv-cache        keep     val_loss=0.335  ↓ KV-cache optim       │
-│  #13  mixup-aug       discard  val_loss=0.355  ↑ MixUp augmentation   │
-│  #12  batch-x2        keep     val_loss=0.338  ↓ Double batch size    │
-│  #11  flash-attn      keep     val_loss=0.343  ↓ FlashAttention-2     │
-│                                                                        │
-│  [p]ause [r]esume [s]kip [a]dd idea [g]pu [q]uit                      │
+┌─ OPEN RESEARCHER ─ research-v1 ────────────────────────────────────────┐
+│ Research  branch main  frontier 3  best=0.3290                        │
+├─ Command ─ Execution ─ Logs ─ Docs ────────────────────────────────────┤
+│ Role Activity      │ Frontier Focus          │ Frontier Detail         │
+│ Research Manager   │ frontier-001 / exec-014 │ status / priority /     │
+│ Research Critic    │ hypothesis + spec       │ claim chips             │
+│ Experiment Agent   │ select a frontier       │ collapsible hypothesis  │
+│                    │ to inspect               │ spec / evidence / claim │
+│────────────────────┼─────────────────────────┼─────────────────────────│
+│ Research Graph     │ Lineage & Timeline      │ Docs sidebar + search   │
+│ hypotheses/specs   │ hypothesis tree         │ grouped by type         │
+│ evidence/claims    │ recent manager / critic │ recent docs + preview   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 <details>
-<summary><b>📑 5 Tabs & Keyboard Shortcuts</b></summary>
+<summary><b>📑 4 Tabs & Keyboard Shortcuts</b></summary>
 <br/>
 
-**5 tabs**:
+**4 tabs**:
 
-- **Overview** — Real-time stats, agent status with progress bar, recent results
-- **Ideas** — Idea pool with status, priority, category, metric values
-- **Charts** — Metric trend visualization with keep/discard/crash coloring
-- **Logs** — Live agent output with diff highlighting and thinking/acting phases
-- **Docs** — Auto-refreshing views of project understanding, literature, evaluation, ideas
+- **Command** — Session chrome, role activity, frontier focus, collapsible frontier detail drawer, graph summary, hypothesis lineage, recent timeline
+- **Execution** — Metric trend, baseline/current/best summary, recent results, execution focus
+- **Logs** — Trace-aware runtime log with `frontier_id / execution_id / reason_code`
+- **Docs** — Searchable docs workbench with grouped navigation, recent history, preview, and live document viewer
 
-**Keyboard shortcuts**: `1-5` switch tabs, `p` pause, `r` resume, `s` skip idea, `a` add idea, `g` GPU status, `q` quit.
+**Keyboard shortcuts**: `1-4` switch tabs, `p` pause, `r` resume, `s` skip frontier, `g` GPU status, `l` open run log, `q` quit.
+
+</details>
+
+<details>
+<summary><b>🔎 Command Page Highlights</b></summary>
+<br/>
+
+- **Frontier Focus** shows the top projected frontier rows ordered by runtime priority, not a separate editable idea pool.
+- **Frontier Detail Drawer** is selection-driven and includes collapsible sections for hypothesis, experiment spec, metric/evidence comparison, and claim updates.
+- **Metric & Evidence Compare** shows latest observed metric, best observed metric, baseline/current/global best references, and evidence reliability counts.
+- **Lineage & Timeline** combines branch relations from `research_graph.json` with the latest typed events from `events.jsonl`.
+
+</details>
+
+<details>
+<summary><b>📚 Docs Workbench Highlights</b></summary>
+<br/>
+
+- Documents are grouped by type: **Research State**, **Research Notes**, and **Role Programs**.
+- Search highlights matching text in titles, filenames, and previews.
+- Recent documents are tracked in-session so you can jump back to the last files you inspected.
+- Dynamic docs such as `research_graph.md`, `research_memory.md`, and `projected_backlog.md` are generated from canonical JSON state.
 
 </details>
 
@@ -318,10 +337,10 @@ make lint   # run linter
 
 | Command | What It Does |
 |:---|:---|
-| `ideas list` | List idea pool |
-| `ideas add "description"` | Add idea manually |
-| `ideas delete IDEA_ID` | Remove idea |
-| `ideas prioritize` | Re-prioritize ideas |
+| `ideas list` | Inspect the projected backlog currently derived from `research_graph.json` |
+| `ideas add "description"` | Compatibility command that now refuses mutation under `research-v1` |
+| `ideas delete IDEA_ID` | Compatibility command that now refuses mutation under `research-v1` |
+| `ideas prioritize` | Compatibility command that now refuses mutation under `research-v1` |
 
 </details>
 
@@ -425,8 +444,9 @@ agents:                       # per-agent overrides (optional)
 
 | Module | Description |
 |:---|:---|
-| `app.py` | Main Textual application, 5-tab layout |
-| `widgets.py` | UI components (Stats, Ideas, Charts, Logs, Docs) |
+| `app.py` | Main Textual application for the 4-tab research command center |
+| `widgets.py` | Command, execution, logs, docs, lineage, frontier, and detail drawer widgets |
+| `view_model.py` | TUI-specific aggregation layer from graph / memory / results / events into renderable state |
 | `review.py` | Post-Scout review TUI |
 | `modals.py` | Modal dialogs (AddIdea, GPUStatus, Log) |
 | `tui_runner.py` | Shared Textual session lifecycle for bootstrap and existing-workflow entrypoints |
@@ -441,7 +461,7 @@ agents:                       # per-agent overrides (optional)
 | Module | Description |
 |:---|:---|
 | `idea_pool.py` | Serial idea backlog plus parallel claim handling for workers |
-| `research_loop.py` | Shared Scout → Idea → Experiment core loop |
+| `research_loop.py` | Shared Scout → Manager → Critic → Experiment core loop |
 | `research_events.py` | Typed event contract shared by TUI and headless |
 | `event_journal.py` | Shared JSONL journal for runtime and control events |
 | `control_plane.py` | Runtime control (pause/resume/skip) |

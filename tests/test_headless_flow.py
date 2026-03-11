@@ -164,6 +164,7 @@ def test_headless_empty_frontier_completes_session(tmp_path):
             max_experiments=0,
             agent_name=None,
             tag="test",
+            workers=1,
             stream=buf,
         )
 
