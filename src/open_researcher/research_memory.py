@@ -63,6 +63,9 @@ class ResearchMemoryStore:
         hypotheses = {
             str(item.get("id", "")).strip(): item for item in graph.get("hypotheses", []) if isinstance(item, dict)
         }
+        frontier = {
+            str(item.get("id", "")).strip(): item for item in graph.get("frontier", []) if isinstance(item, dict)
+        }
         evidence = {
             str(item.get("id", "")).strip(): item for item in graph.get("evidence", []) if isinstance(item, dict)
         }
@@ -90,10 +93,12 @@ class ResearchMemoryStore:
                     continue
                 if include_ideation:
                     hypothesis = hypotheses.get(str(update.get("hypothesis_id", "")).strip(), {})
+                    frontier_row = frontier.get(str(update.get("frontier_id", "")).strip(), {})
                     normalized["ideation_memory"].append(
                         {
                             "source_claim_update": update_id,
                             "frontier_id": str(update.get("frontier_id", "")).strip(),
+                            "family_key": str(frontier_row.get("family_key", "")).strip(),
                             "profile_key": profile_key,
                             "hypothesis_id": str(update.get("hypothesis_id", "")).strip(),
                             "experiment_spec_id": str(update.get("experiment_spec_id", "")).strip(),
@@ -118,10 +123,12 @@ class ResearchMemoryStore:
                     continue
                 if include_experiment:
                     source_row = evidence.get(evidence_id, row)
+                    frontier_row = frontier.get(str(source_row.get("frontier_id", "")).strip(), {})
                     normalized["experiment_memory"].append(
                         {
                             "source_evidence": evidence_id,
                             "frontier_id": str(source_row.get("frontier_id", "")).strip(),
+                            "family_key": str(frontier_row.get("family_key", "")).strip(),
                             "idea_id": str(source_row.get("idea_id", "")).strip(),
                             "execution_id": str(source_row.get("execution_id", "")).strip(),
                             "profile_key": profile_key,

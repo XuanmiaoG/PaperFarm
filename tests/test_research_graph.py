@@ -144,6 +144,14 @@ def test_memory_store_absorbs_graph_claims_and_evidence(tmp_path):
                 "primary_metric": "tests",
                 "direction": "higher_is_better",
             },
+            "frontier": [
+                {
+                    "id": "frontier-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "family_key": "fam-demo1234",
+                }
+            ],
             "hypotheses": [{"id": "hyp-001", "summary": "Cache manifest reads"}],
             "evidence": [
                 {
@@ -177,8 +185,10 @@ def test_memory_store_absorbs_graph_claims_and_evidence(tmp_path):
     payload = memory.read()
     assert result["repo_type_priors"] == 1
     assert payload["ideation_memory"][0]["outcome"] == "promote"
+    assert payload["ideation_memory"][0]["family_key"] == "fam-demo1234"
     assert payload["ideation_memory"][0]["reason_code"] == "supported_by_strong_evidence"
     assert payload["experiment_memory"][0]["reliability"] == "strong"
+    assert payload["experiment_memory"][0]["family_key"] == "fam-demo1234"
     assert payload["experiment_memory"][0]["reason_code"] == "benchmark_delta"
 
 
@@ -276,6 +286,70 @@ def test_graph_store_sync_respects_manager_batch_size_projection(tmp_path):
     assert len(projected["ideas"]) == 1
     assert projected["ideas"][0]["frontier_id"] == "frontier-001"
     assert len(store.read()["frontier"]) == 2
+
+
+def test_graph_store_applies_history_policy_before_projection(tmp_path):
+    research = tmp_path / ".research"
+    research.mkdir()
+    graph_path = research / "research_graph.json"
+    pool_path = research / "idea_pool.json"
+    pool_path.write_text(json.dumps({"ideas": []}))
+
+    store = ResearchGraphStore(graph_path)
+    store.ensure_exists()
+    payload = store.read()
+    payload["hypotheses"] = [{"id": "hyp-001", "summary": "Seed locking reduces variance"}]
+    payload["experiment_specs"] = [
+        {
+            "id": "spec-001",
+            "hypothesis_id": "hyp-001",
+            "summary": "Run fixed-seed benchmark",
+            "attribution_focus": "evaluation stability",
+            "expected_signal": "variance down",
+        },
+        {
+            "id": "spec-002",
+            "hypothesis_id": "hyp-001",
+            "summary": "Run fixed-seed benchmark",
+            "attribution_focus": "evaluation stability",
+            "expected_signal": "variance down",
+        },
+    ]
+    payload["frontier"] = [
+        {
+            "id": "frontier-001",
+            "hypothesis_id": "hyp-001",
+            "experiment_spec_id": "spec-001",
+            "description": "Reproduce the fixed-seed win",
+            "priority": 2,
+            "status": "needs_repro",
+            "claim_state": "needs_repro",
+            "repro_required": True,
+        },
+        {
+            "id": "frontier-002",
+            "hypothesis_id": "hyp-001",
+            "experiment_spec_id": "spec-002",
+            "description": "Try another shallow variant",
+            "priority": 1,
+            "status": "approved",
+            "claim_state": "candidate",
+        },
+    ]
+    graph_path.write_text(json.dumps(payload, indent=2))
+
+    policy = store.apply_history_policy({"ideation_memory": [], "experiment_memory": []})
+    result = store.sync_idea_pool(pool_path, max_items=1)
+    graph = store.read()
+    projected = json.loads(pool_path.read_text(encoding="utf-8"))
+
+    assert policy["updated"] == 1
+    assert graph["frontier"][1]["policy_state"] == "prefer_repro"
+    assert graph["frontier"][1]["runtime_priority"] == 3
+    assert result["frontier_items"] == 1
+    assert projected["ideas"][0]["frontier_id"] == "frontier-001"
+    assert projected["ideas"][0]["priority"] == 2
+    assert projected["ideas"][0]["runtime_priority"] == 2
 
 
 def test_graph_store_drops_orphan_evidence_and_claim_rows(tmp_path):

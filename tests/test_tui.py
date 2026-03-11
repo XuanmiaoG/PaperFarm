@@ -193,12 +193,15 @@ def test_frontier_focus_panel_renders_research_cards():
                 risk_level="low",
                 reason_code="approved_for_execution",
                 metric_value="0.84",
+                policy_state="prefer_repro",
+                policy_reason="existing repro pending",
             )
         ]
     )
     assert "frontier-001" in panel.items_text
     assert "REPRO" in panel.items_text
     assert "approved_for_execution" in panel.items_text
+    assert "existing repro pending" in panel.items_text
 
 
 def test_frontier_detail_panel_renders_selected_frontier_payload():
@@ -220,6 +223,8 @@ def test_frontier_detail_panel_renders_selected_frontier_payload():
                 expected_signal="variance down",
                 risk_level="low",
                 reason_code="approved_for_execution",
+                policy_state="prefer_repro",
+                policy_reason="existing repro pending",
             ),
             hypothesis_id="hyp-001",
             hypothesis_rationale="Random order may be masking signal.",
@@ -263,6 +268,8 @@ def test_frontier_detail_panel_renders_selected_frontier_payload():
     assert "claim-001" in panel.body_text
     assert "vs baseline" in panel.body_text
     assert "best observed" in panel.body_text
+    assert "history policy" in panel.body_text
+    assert "existing repro pending" in panel.body_text
 
 
 def test_lineage_timeline_panel_renders_branch_and_timeline():

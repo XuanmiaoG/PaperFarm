@@ -8,6 +8,8 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from open_researcher.memory_policy import apply_history_policy as apply_frontier_history_policy
+from open_researcher.memory_policy import build_family_key
 from open_researcher.storage import atomic_write_json, locked_read_json, locked_update_json
 
 FRONTIER_STATUSES = {
@@ -75,6 +77,12 @@ CLAIM_REASON_CODES = {
     "regression_detected",
     "reproduction_requested",
     "noisy_measurement",
+}
+POLICY_STATES = {
+    "neutral",
+    "prefer_repro",
+    "repeat_failure_risk",
+    "duplicate_same_cycle",
 }
 
 
@@ -381,6 +389,7 @@ class ResearchGraphStore:
         experiment_specs: list[dict],
     ) -> list[dict]:
         known_hypotheses = {str(row.get("id", "")).strip() for row in hypotheses}
+        hypothesis_by_id = {str(row.get("id", "")).strip(): row for row in hypotheses if isinstance(row, dict)}
         known_specs = {str(row.get("id", "")).strip() for row in experiment_specs}
         spec_by_id = {str(row.get("id", "")).strip(): row for row in experiment_specs if isinstance(row, dict)}
         normalized: list[dict] = []
@@ -408,6 +417,18 @@ class ResearchGraphStore:
             if claim_state not in CLAIM_STATES:
                 claim_state = "candidate"
             spec_row = spec_by_id.get(spec_id, {})
+            hypothesis_row = hypothesis_by_id.get(hypothesis_id, {})
+            priority = self._normalize_priority(row.get("priority", row.get("manager_priority", 5)))
+            manager_priority = self._normalize_priority(row.get("manager_priority", priority), default=priority)
+            runtime_priority = self._normalize_priority(
+                row.get("runtime_priority", manager_priority),
+                default=manager_priority,
+            )
+            family_key = str(row.get("family_key", "")).strip() or build_family_key(
+                row,
+                hypothesis_row,
+                spec_row,
+            )
             normalized.append(
                 {
                     "id": frontier_id,
@@ -419,12 +440,17 @@ class ResearchGraphStore:
                     "last_execution_id": str(row.get("last_execution_id", "")).strip(),
                     "last_evidence_id": str(row.get("last_evidence_id", "")).strip(),
                     "last_claim_update_id": str(row.get("last_claim_update_id", "")).strip(),
+                    "family_key": family_key,
                     "description": str(
                         row.get("description", "") or row.get("summary", "") or spec_row.get("summary", "")
                     ).strip(),
-                    "priority": self._normalize_priority(row.get("priority", 5)),
+                    "priority": priority,
+                    "manager_priority": manager_priority,
+                    "runtime_priority": runtime_priority,
                     "status": status,
                     "claim_state": claim_state,
+                    "policy_state": self._normalize_policy_state(row.get("policy_state")),
+                    "policy_reason": str(row.get("policy_reason", "")).strip(),
                     "source": str(row.get("source", "graph")).strip() or "graph",
                     "category": str(row.get("category", "graph")).strip() or "graph",
                     "gpu_hint": row.get("gpu_hint", "auto"),
@@ -476,6 +502,12 @@ class ResearchGraphStore:
                 continue
         return normalized
 
+    def _normalize_policy_state(self, value) -> str:
+        state = str(value or "").strip() or "neutral"
+        if state not in POLICY_STATES:
+            return "neutral"
+        return state
+
     def _string_list(self, value) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -513,6 +545,13 @@ class ResearchGraphStore:
             "review_reason_code": review_reason,
             "reason_code": review_reason if review_reason and review_reason != "unspecified" else selection_reason,
             "repro_required": bool(row.get("repro_required", False)),
+            "family_key": str(row.get("family_key", "")).strip(),
+            "manager_priority": self._normalize_priority(row.get("manager_priority", row.get("priority", 5))),
+            "runtime_priority": self._normalize_priority(
+                row.get("runtime_priority", row.get("manager_priority", row.get("priority", 5)))
+            ),
+            "policy_state": self._normalize_policy_state(row.get("policy_state")),
+            "policy_reason": str(row.get("policy_reason", "")).strip(),
         }
 
     def _evidence_trace(self, row: dict) -> dict:
@@ -609,7 +648,8 @@ class ResearchGraphStore:
         rows = [item for item in data["frontier"] if str(item.get("status", "")) in wanted]
         rows.sort(
             key=lambda item: (
-                int(item.get("priority", 9999) or 9999),
+                int(item.get("runtime_priority", item.get("priority", 9999)) or 9999),
+                int(item.get("manager_priority", item.get("priority", 9999)) or 9999),
                 str(item.get("id", "")),
             )
         )
@@ -637,7 +677,8 @@ class ResearchGraphStore:
             ]
             projected.sort(
                 key=lambda item: (
-                    int(item.get("priority", 9999) or 9999),
+                    int(item.get("runtime_priority", item.get("priority", 9999)) or 9999),
+                    int(item.get("manager_priority", item.get("priority", 9999)) or 9999),
                     str(item.get("id", "")),
                 )
             )
@@ -664,6 +705,8 @@ class ResearchGraphStore:
                     execution_id = self._next_execution_id(normalized["counters"])
                     item["active_execution_id"] = execution_id
                 idea_status = "running" if status == "running" else "pending"
+                manager_priority = int(item.get("manager_priority", item.get("priority", 5)) or 5)
+                runtime_priority = int(item.get("runtime_priority", manager_priority) or manager_priority)
                 ideas.append(
                     {
                         "id": idea_id,
@@ -672,7 +715,9 @@ class ResearchGraphStore:
                         "description": str(item.get("description", "")).strip() or str(item.get("summary", "")).strip(),
                         "source": str(item.get("source", "graph")).strip() or "graph",
                         "category": str(item.get("category", "graph")).strip() or "graph",
-                        "priority": int(item.get("priority", 5) or 5),
+                        "priority": runtime_priority,
+                        "manager_priority": manager_priority,
+                        "runtime_priority": runtime_priority,
                         "status": idea_status,
                         "gpu_hint": item.get("gpu_hint", "auto"),
                         "result": item.get("result"),
@@ -680,8 +725,11 @@ class ResearchGraphStore:
                         "hypothesis_id": str(item.get("hypothesis_id", "")).strip(),
                         "experiment_spec_id": str(item.get("experiment_spec_id", "")).strip(),
                         "branch_id": str(item.get("branch_id", "")).strip(),
+                        "family_key": str(item.get("family_key", "")).strip(),
                         "claim_state": str(item.get("claim_state", "candidate")).strip() or "candidate",
                         "repro_required": bool(item.get("repro_required", False)),
+                        "policy_state": self._normalize_policy_state(item.get("policy_state")),
+                        "policy_reason": str(item.get("policy_reason", "")).strip(),
                         "review_reason": str(item.get("review_reason", "")).strip(),
                         "attribution_focus": str(item.get("attribution_focus", "")).strip()
                         or str(spec.get("attribution_focus", "")).strip(),
@@ -701,7 +749,13 @@ class ResearchGraphStore:
                     }
                 )
                 trace_items.append(self._frontier_trace(item))
-            ideas.sort(key=lambda item: (int(item.get("priority", 9999)), str(item.get("id", ""))))
+            ideas.sort(
+                key=lambda item: (
+                    int(item.get("runtime_priority", item.get("priority", 9999)) or 9999),
+                    int(item.get("manager_priority", item.get("priority", 9999)) or 9999),
+                    str(item.get("id", "")),
+                )
+            )
             data.clear()
             data.update(normalized)
             return {"ideas": ideas, "items": trace_items}
@@ -709,6 +763,47 @@ class ResearchGraphStore:
         _data, pool_payload = locked_update_json(self.path, self._lock, _do, default=_default_graph)
         atomic_write_json(pool_path, {"ideas": pool_payload["ideas"]})
         return {"frontier_items": len(pool_payload["ideas"]), "items": pool_payload["items"]}
+
+    def apply_history_policy(self, memory_payload: dict) -> dict:
+        """Annotate frontier rows with family keys and runtime history policy."""
+
+        def _do(data):
+            normalized = self._normalize(data)
+            before_rows = {
+                str(row.get("id", "")).strip(): {
+                    "family_key": str(row.get("family_key", "")).strip(),
+                    "manager_priority": int(row.get("manager_priority", row.get("priority", 5)) or 5),
+                    "runtime_priority": int(row.get("runtime_priority", row.get("priority", 5)) or 5),
+                    "policy_state": self._normalize_policy_state(row.get("policy_state")),
+                    "policy_reason": str(row.get("policy_reason", "")).strip(),
+                }
+                for row in normalized["frontier"]
+                if isinstance(row, dict)
+            }
+            normalized["frontier"] = apply_frontier_history_policy(normalized["frontier"], normalized, memory_payload)
+            changed: list[dict] = []
+            for row in normalized["frontier"]:
+                if not isinstance(row, dict):
+                    continue
+                frontier_id = str(row.get("id", "")).strip()
+                if not frontier_id:
+                    continue
+                before = before_rows.get(frontier_id, {})
+                after = {
+                    "family_key": str(row.get("family_key", "")).strip(),
+                    "manager_priority": int(row.get("manager_priority", row.get("priority", 5)) or 5),
+                    "runtime_priority": int(row.get("runtime_priority", row.get("priority", 5)) or 5),
+                    "policy_state": self._normalize_policy_state(row.get("policy_state")),
+                    "policy_reason": str(row.get("policy_reason", "")).strip(),
+                }
+                if after != before:
+                    changed.append(self._frontier_trace(row))
+            data.clear()
+            data.update(normalized)
+            return {"updated": len(changed), "items": changed}
+
+        _data, result = locked_update_json(self.path, self._lock, _do, default=_default_graph)
+        return result
 
     def absorb_experiment_outcomes(
         self,

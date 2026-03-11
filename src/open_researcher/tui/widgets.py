@@ -54,6 +54,13 @@ def _format_metric(value) -> str:
         return text or "n/a"
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _chip(text: str, *, fg: str = C_TEXT, bg: str | None = None) -> str:
     label = escape(text.strip() or "n/a")
     if bg:
@@ -90,6 +97,13 @@ def _status_color(status: str) -> str:
 def _role_label(status: str) -> str:
     value = str(status or "").strip() or "idle"
     return value.replace("_", " ").upper()
+
+
+def _policy_chip(state: str) -> str:
+    value = str(state or "").strip() or "neutral"
+    if value == "neutral":
+        return ""
+    return _chip(value.replace("_", " "), fg="#08111a", bg=_status_color(value))
 
 
 def _metric_delta_text(value: float | None, reference: float | None, *, direction: str, label: str) -> str:
@@ -384,11 +398,12 @@ class ProjectedBacklogPanel(Static):
             status_chip = _chip(item.status.replace("_", " "), fg="#08111a", bg=_status_color(item.status))
             priority_chip = _chip(f"P{item.priority}", fg="#08111a", bg=C_ACCENT)
             repro_chip = f" {_chip('REPRO', fg='#08111a', bg=C_WARNING)}" if item.repro_required else ""
+            policy_chip = f" {_policy_chip(item.policy_state)}" if item.policy_state != "neutral" else ""
             trace_bits = [escape(item.frontier_id)]
             if item.execution_id:
                 trace_bits.append(escape(item.execution_id))
             trace_bits.append(escape(item.reason_code))
-            lines.append(f"{priority_chip} {status_chip}{repro_chip}")
+            lines.append(f"{priority_chip} {status_chip}{repro_chip}{policy_chip}")
             lines.append(f"[bold {C_PRIMARY}]{' / '.join(trace_bits)}[/]")
             if item.hypothesis_summary:
                 lines.append(f"[{C_TEXT}]H:[/] {escape(item.hypothesis_summary)}")
@@ -402,6 +417,11 @@ class ProjectedBacklogPanel(Static):
             if item.metric_value:
                 tail.append(f"[{C_DIM}]metric[/] {_format_metric(item.metric_value)}")
             lines.append("  ".join(tail))
+            if item.policy_state != "neutral":
+                lines.append(
+                    f"[{C_WARNING}]policy[/] {escape(item.policy_state)}"
+                    f"  [{C_DIM}]{escape(item.policy_reason or 'history-adjusted')}[/]"
+                )
             lines.append("")
             label = (
                 f"[{C_PRIMARY}]P{item.priority}[/] "
@@ -441,7 +461,7 @@ class ProjectedBacklogPanel(Static):
                     frontier_id=str(idea.get("frontier_id", "")).strip() or str(idea.get("id", "")).strip(),
                     execution_id=str(idea.get("execution_id", "")).strip(),
                     idea_id=str(idea.get("id", "")).strip(),
-                    priority=int(idea.get("priority", 5) or 5),
+                    priority=_safe_int(idea.get("runtime_priority", idea.get("priority", 5)), 5),
                     status=str(idea.get("status", "pending") or "pending").strip(),
                     claim_state=str(idea.get("claim_state", "candidate") or "candidate").strip(),
                     repro_required=bool(idea.get("repro_required", False)),
@@ -453,6 +473,10 @@ class ProjectedBacklogPanel(Static):
                     risk_level=str(idea.get("risk_level", "")).strip() or "medium",
                     reason_code=reason_code,
                     metric_value=metric_value,
+                    manager_priority=_safe_int(idea.get("manager_priority", idea.get("priority", 5)), 5),
+                    runtime_priority=_safe_int(idea.get("runtime_priority", idea.get("priority", 5)), 5),
+                    policy_state=str(idea.get("policy_state", "neutral") or "neutral").strip() or "neutral",
+                    policy_reason=str(idea.get("policy_reason", "")).strip(),
                 )
             )
         cards.sort(key=lambda item: (item.priority, item.frontier_id))
@@ -488,6 +512,8 @@ class FrontierFocusPanel(ProjectedBacklogPanel):
         ]
         if item.repro_required:
             chips.append(_chip("REPRO", fg="#08111a", bg=C_WARNING))
+        if item.policy_state != "neutral":
+            chips.append(_policy_chip(item.policy_state))
         preview = [
             f"[bold {C_TEXT}]Active Frontier[/]  {' '.join(chips)}",
             (
@@ -497,6 +523,8 @@ class FrontierFocusPanel(ProjectedBacklogPanel):
             ),
             f"[{C_TEXT}]{escape(item.hypothesis_summary or item.spec_summary or item.description)}[/]",
         ]
+        if item.policy_state != "neutral":
+            preview.append(f"[{C_WARNING}]history policy[/] {escape(item.policy_reason or item.policy_state)}")
         self.query_one("#frontier-active", Static).update("\n".join(preview))
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
@@ -577,6 +605,8 @@ class FrontierDetailPanel(Static):
         ]
         if frontier.repro_required:
             chips.append(_chip("REPRO", fg="#08111a", bg=C_WARNING))
+        if frontier.policy_state != "neutral":
+            chips.append(_policy_chip(frontier.policy_state))
 
         summary_lines = [
             f"[bold {C_TEXT}]Frontier Detail[/]  {' '.join(chips)}",
@@ -617,6 +647,11 @@ class FrontierDetailPanel(Static):
             )
         elif frontier.metric_value:
             summary_lines.append(f"[{C_DIM}]projected metric[/] [{C_INFO}]{_format_metric(frontier.metric_value)}[/]")
+        if frontier.policy_state != "neutral":
+            summary_lines.append(
+                f"[{C_WARNING}]history policy[/] {escape(frontier.policy_state)}"
+                f"  [{C_DIM}]{escape(frontier.policy_reason or 'history-adjusted')}[/]"
+            )
 
         hypothesis_lines = [
             f"[bold {C_TEXT}]{escape(frontier.hypothesis_summary or detail.hypothesis_id or frontier.description)}[/]",
@@ -705,7 +740,10 @@ class IdeaListPanel(ProjectedBacklogPanel):
             return
 
         def _sort_key(idea: dict) -> tuple[int, str]:
-            return (int(idea.get("priority", 9999) or 9999), str(idea.get("id", "")))
+            return (
+                _safe_int(idea.get("runtime_priority", idea.get("priority", 9999)), 9999),
+                str(idea.get("id", "")),
+            )
 
         lines: list[str] = []
         for idea in sorted(ideas, key=_sort_key):
@@ -1305,7 +1343,7 @@ def render_ideas_markdown(ideas: list[dict]) -> str:
 
     def _sort_key(item):
         return (
-            int(item.get("priority", 9999) or 9999),
+            _safe_int(item.get("runtime_priority", item.get("priority", 9999)), 9999),
             str(item.get("id", "")),
         )
 

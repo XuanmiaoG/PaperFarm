@@ -118,6 +118,10 @@ class FrontierCard:
     risk_level: str
     reason_code: str
     metric_value: str = ""
+    manager_priority: int = 0
+    runtime_priority: int = 0
+    policy_state: str = "neutral"
+    policy_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -268,7 +272,7 @@ def _frontier_from_projected_idea(idea: dict) -> FrontierCard:
         frontier_id=str(idea.get("frontier_id", "")).strip() or str(idea.get("id", "")).strip(),
         execution_id=str(idea.get("execution_id", "")).strip(),
         idea_id=str(idea.get("id", "")).strip(),
-        priority=_safe_int(idea.get("priority", 5), 5),
+        priority=_safe_int(idea.get("runtime_priority", idea.get("priority", 5)), 5),
         status=str(idea.get("status", "pending") or "pending").strip() or "pending",
         claim_state=str(idea.get("claim_state", "candidate") or "candidate").strip() or "candidate",
         repro_required=bool(idea.get("repro_required", False)),
@@ -283,6 +287,10 @@ def _frontier_from_projected_idea(idea: dict) -> FrontierCard:
         risk_level=str(idea.get("risk_level", "")).strip() or "medium",
         reason_code=reason_code,
         metric_value=metric_value,
+        manager_priority=_safe_int(idea.get("manager_priority", idea.get("priority", 5)), 5),
+        runtime_priority=_safe_int(idea.get("runtime_priority", idea.get("priority", 5)), 5),
+        policy_state=str(idea.get("policy_state", "neutral") or "neutral").strip() or "neutral",
+        policy_reason=_short_text(idea.get("policy_reason", ""), limit=88),
     )
 
 
@@ -300,7 +308,7 @@ def _frontier_from_graph_row(frontier: dict, hypotheses: dict[str, dict], specs:
         frontier_id=str(frontier.get("id", "")).strip(),
         execution_id=str(frontier.get("active_execution_id", "") or frontier.get("last_execution_id", "")).strip(),
         idea_id=str(frontier.get("idea_id", "")).strip(),
-        priority=_safe_int(frontier.get("priority", 5), 5),
+        priority=_safe_int(frontier.get("runtime_priority", frontier.get("priority", 5)), 5),
         status=str(frontier.get("status", "draft")).strip() or "draft",
         claim_state=str(frontier.get("claim_state", "candidate")).strip() or "candidate",
         repro_required=bool(frontier.get("repro_required", False)),
@@ -318,6 +326,10 @@ def _frontier_from_graph_row(frontier: dict, hypotheses: dict[str, dict], specs:
         risk_level=str(spec.get("risk_level", "")).strip() or "medium",
         reason_code=reason_code,
         metric_value=metric_value,
+        manager_priority=_safe_int(frontier.get("manager_priority", frontier.get("priority", 5)), 5),
+        runtime_priority=_safe_int(frontier.get("runtime_priority", frontier.get("priority", 5)), 5),
+        policy_state=str(frontier.get("policy_state", "neutral") or "neutral").strip() or "neutral",
+        policy_reason=_short_text(frontier.get("policy_reason", ""), limit=88),
     )
 
 
@@ -589,7 +601,11 @@ def build_dashboard_state(
     frontiers: list[FrontierCard] = []
     sorted_ideas = sorted(
         [idea for idea in ideas if isinstance(idea, dict)],
-        key=lambda idea: (_safe_int(idea.get("priority", 9999), 9999), str(idea.get("id", ""))),
+        key=lambda idea: (
+            _safe_int(idea.get("runtime_priority", idea.get("priority", 9999)), 9999),
+            _safe_int(idea.get("manager_priority", idea.get("priority", 9999)), 9999),
+            str(idea.get("id", "")),
+        ),
     )
     for idea in sorted_ideas[:8]:
         frontiers.append(_frontier_from_projected_idea(idea))
@@ -598,7 +614,8 @@ def build_dashboard_state(
         graph_frontier = list(graph_frontier_rows)
         graph_frontier.sort(
             key=lambda row: (
-                _safe_int(row.get("priority", 9999), 9999),
+                _safe_int(row.get("runtime_priority", row.get("priority", 9999)), 9999),
+                _safe_int(row.get("manager_priority", row.get("priority", 9999)), 9999),
                 str(row.get("id", "")),
             )
         )

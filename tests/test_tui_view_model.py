@@ -125,9 +125,13 @@ def test_build_dashboard_state_aggregates_graph_and_roles(tmp_path: Path):
             "frontier_id": "frontier-001",
             "execution_id": "exec-001",
             "priority": 1,
+            "manager_priority": 1,
+            "runtime_priority": 3,
             "status": "pending",
             "claim_state": "candidate",
             "repro_required": True,
+            "policy_state": "prefer_repro",
+            "policy_reason": "existing repro pending",
             "hypothesis_summary": "Seed locking reduces variance",
             "spec_summary": "Run fixed-seed benchmark",
             "expected_signal": "variance down",
@@ -161,7 +165,10 @@ def test_build_dashboard_state_aggregates_graph_and_roles(tmp_path: Path):
     assert dashboard.graph.ideation_memory == 1
     assert dashboard.graph.experiment_memory == 2
     assert dashboard.frontiers[0].frontier_id == "frontier-001"
+    assert dashboard.frontiers[0].priority == 3
+    assert dashboard.frontiers[0].policy_state == "prefer_repro"
     assert dashboard.frontier_details["frontier-001"].experiment_spec_id == "spec-001"
+    assert dashboard.frontier_details["frontier-001"].frontier.policy_reason == "existing repro pending"
     assert dashboard.frontier_details["frontier-001"].latest_metric_value == 0.82
     assert dashboard.frontier_details["frontier-001"].best_metric_value == 0.82
     assert dashboard.roles[0].status == "running"
@@ -169,6 +176,40 @@ def test_build_dashboard_state_aggregates_graph_and_roles(tmp_path: Path):
     assert dashboard.claims[0].claim_update_id == "claim-001"
     assert dashboard.lineage[0].relation == "refines"
     assert dashboard.trace_banner.endswith("breadth_exploration")
+
+
+def test_build_dashboard_state_sorts_projected_ideas_by_runtime_priority(tmp_path: Path):
+    research = tmp_path / ".research"
+    research.mkdir()
+    (research / "research_graph.json").write_text('{"version":"research-v1"}', encoding="utf-8")
+    (research / "research_memory.json").write_text("{}", encoding="utf-8")
+
+    dashboard = build_dashboard_state(
+        tmp_path,
+        state={"primary_metric": "score", "direction": "higher_is_better"},
+        ideas=[
+            {
+                "id": "idea-002",
+                "frontier_id": "frontier-002",
+                "priority": 1,
+                "runtime_priority": 5,
+                "status": "pending",
+                "description": "later",
+            },
+            {
+                "id": "idea-001",
+                "frontier_id": "frontier-001",
+                "priority": 3,
+                "runtime_priority": 1,
+                "status": "pending",
+                "description": "first",
+            },
+        ],
+        activities={},
+        rows=[],
+    )
+
+    assert [item.frontier_id for item in dashboard.frontiers[:2]] == ["frontier-001", "frontier-002"]
 
 
 def test_build_docs_workbench_collects_availability_and_preview(tmp_path: Path):

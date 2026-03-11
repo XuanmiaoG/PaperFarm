@@ -727,6 +727,14 @@ class ResearchLoop:
                         ],
                     )
                 )
+            history_policy = graph_store.apply_history_policy(memory_store.read())
+            if history_policy["updated"]:
+                self.emit(
+                    AgentOutput(
+                        phase="experimenting",
+                        detail=f"History policy updated {history_policy['updated']} frontier row(s).",
+                    )
+                )
 
             if graph_store.has_frontier_status(graph_store.PREFLIGHT_FRONTIER_STATUSES):
                 control_action = self._enforce_runtime_controls(
@@ -897,6 +905,14 @@ class ResearchLoop:
                 repro_items = self._new_reproduction_requests(before_post, after_post)
                 if repro_items:
                     self.emit(ReproductionRequested(count=len(repro_items), items=repro_items))
+                history_policy = graph_store.apply_history_policy(memory_store.read())
+                if history_policy["updated"]:
+                    self.emit(
+                        AgentOutput(
+                            phase="experimenting",
+                            detail=f"History policy updated {history_policy['updated']} frontier row(s).",
+                        )
+                    )
                 frontier_sync = graph_store.sync_idea_pool(
                     self.research_dir / "idea_pool.json",
                     max_items=self.cfg.manager_batch_size,

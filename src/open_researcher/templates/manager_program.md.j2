@@ -148,12 +148,13 @@ Allowed `selection_reason_code` values:
 Before writing:
 
 1. Read current evidence and claim updates first.
-2. Respect the configured frontier batch size from `config.yaml`; if you cannot find it, keep at most **3 active frontier rows**.
-3. Prefer **one causal change per experiment spec**.
-4. Do not create multiple specs that test the same idea with only superficial wording changes.
-5. If a branch already has strong evidence, exploit with one precise refinement.
-6. If all active branches are weak or contradictory, add one breadth branch.
-7. Never reopen `archived` or `rejected` work unless you create a new child hypothesis with a new id.
+2. Read `research_memory.json` before proposing new frontier rows; prefer unresolved repro or one-step refinements over shallow repeats.
+3. Respect the configured frontier batch size from `config.yaml`; if you cannot find it, keep at most **3 active frontier rows**.
+4. Prefer **one causal change per experiment spec**.
+5. Do not create multiple specs that test the same idea with only superficial wording changes.
+6. If a branch already has strong evidence, exploit with one precise refinement.
+7. If all active branches are weak or contradictory, add one breadth branch.
+8. Never reopen `archived` or `rejected` work unless you create a new child hypothesis with a new id.
 
 ## Scoring Guidance
 
