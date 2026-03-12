@@ -59,19 +59,13 @@ def ensure_internal_role_programs(
     env: Environment | None = None,
     context: dict | None = None,
 ) -> None:
-    """Ensure internal role program files exist, migrating from legacy files when present."""
+    """Refresh internal role program files from the current packaged templates."""
     template_env = env or _template_env()
     render_context = context or {}
-    for role, spec in _ROLE_PROGRAM_SPECS.items():
+    for spec in _ROLE_PROGRAM_SPECS.values():
         internal_path = research_dir / spec["internal"]
-        if internal_path.exists():
-            continue
         internal_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_path = research_dir / spec["legacy"]
-        if legacy_path.exists():
-            content = legacy_path.read_text(encoding="utf-8")
-        else:
-            content = template_env.get_template(spec["template"]).render(render_context)
+        content = template_env.get_template(spec["template"]).render(render_context)
         internal_path.write_text(content, encoding="utf-8")
 
 
