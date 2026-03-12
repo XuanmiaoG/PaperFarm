@@ -2,6 +2,8 @@
 
 import csv
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,6 +45,12 @@ def _make_idea_pool(research: Path, ideas: list[dict]) -> IdeaPool:
     pool_path = research / "idea_pool.json"
     pool_path.write_text(json.dumps({"ideas": ideas}, indent=2))
     return IdeaPool(pool_path)
+
+
+def _write_executable(path: Path, content: str = "#!/bin/sh\nexit 0\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
 def test_worker_manager_processes_ideas():
@@ -323,6 +331,377 @@ def test_worker_manager_handles_agent_exception():
         summary = idea_pool.summary()
         assert summary["skipped"] == 1
         assert any("Error" in line for line in output_lines)
+
+
+def test_worker_manager_passes_conda_runtime_env_from_bootstrap_state(monkeypatch):
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        conda_root = tmp_path / "miniconda3"
+        env_prefix = conda_root / "envs" / "iraod"
+        (env_prefix / "conda-meta").mkdir(parents=True)
+        python_shim = env_prefix / "bin" / "python"
+        conda_shim = conda_root / "bin" / "conda"
+        _write_executable(python_shim)
+        _write_executable(conda_shim)
+        (research / "bootstrap_state.json").write_text(
+            json.dumps(
+                {
+                    "python_env": {
+                        "executable": str(python_shim),
+                        "source": "config.bootstrap.python",
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "Conda runtime env",
+                    "status": "pending",
+                    "priority": 1,
+                    "claimed_by": None,
+                    "assigned_experiment": None,
+                    "result": None,
+                    "source": "graph",
+                    "category": "graph",
+                    "gpu_hint": "auto",
+                    "created_at": "2026-01-01T00:00:00",
+                }
+            ],
+        )
+
+        seen_env: dict[str, str] = {}
+
+        def mock_agent_factory():
+            agent = MagicMock()
+
+            def run_side_effect(workdir, on_output=None, program_file="program.md", env=None, **kwargs):
+                seen_env.update(env or {})
+                return 0
+
+            agent.run.side_effect = run_side_effect
+            agent.terminate = MagicMock()
+            return agent
+
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=mock_agent_factory,
+            max_workers=1,
+            on_output=lambda line: None,
+        )
+
+        wm.start()
+        wm.join(timeout=5)
+
+        assert Path(seen_env["CONDA_EXE"]).resolve() == conda_shim.resolve()
+        assert Path(seen_env["CONDA_PREFIX"]).resolve() == env_prefix.resolve()
+        path_parts = seen_env["PATH"].split(os.pathsep)
+        assert Path(path_parts[0]).resolve() == (env_prefix / "bin").resolve()
+        assert (conda_root / "bin").resolve() in {Path(item).resolve() for item in path_parts[:3]}
+
+
+def test_worker_manager_reconciles_stale_running_ideas_and_gpu_reservations():
+    class TrackingManager:
+        def __init__(self, status_rows: list[dict]) -> None:
+            self._status = status_rows
+            self.released: list[dict] = []
+
+        def refresh(self):
+            return self._status
+
+        def release_reservations(self, reservations):
+            self.released.extend(reservations)
+            release_ids = {
+                (str(item.get("host", "")), int(item.get("device", -1)), str(item.get("id", "")))
+                for item in reservations
+            }
+            for gpu in self._status:
+                host = str(gpu.get("host", "")).strip()
+                device = int(gpu.get("device", -1))
+                gpu["reservations"] = [
+                    item
+                    for item in gpu.get("reservations", [])
+                    if (host, device, str(item.get("id", ""))) not in release_ids
+                ]
+
+    class NoopAllocator:
+        default_memory_per_worker_mb = 4096
+
+        def __init__(self, manager) -> None:
+            self.manager = manager
+
+        def worker_slots(self, max_workers: int):
+            return []
+
+        def select_claimable_idea(self, pending_ideas: list[dict]) -> str | None:
+            return None
+
+        def allocate_for_idea(self, worker_id: str, idea: dict, preferred=None):
+            return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        results_path = research / "results.tsv"
+        results_path.write_text(
+            "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n",
+            encoding="utf-8",
+        )
+        secondary = json.dumps(
+            {
+                "_open_researcher_trace": {
+                    "frontier_id": "frontier-001",
+                    "idea_id": "idea-001",
+                    "execution_id": "exec-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                }
+            }
+        )
+        with results_path.open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle, delimiter="\t")
+            writer.writerow(
+                [
+                    "2026-03-13T00:00:00Z",
+                    "abc1234",
+                    "mAP",
+                    "0.321000",
+                    secondary,
+                    "keep",
+                    "stale result",
+                ]
+            )
+
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "stale finished run",
+                    "status": "running",
+                    "priority": 1,
+                    "claimed_by": "worker-0",
+                    "claim_token": "claim-1",
+                    "execution_id": "exec-001",
+                    "frontier_id": "frontier-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "protocol": "research-v1",
+                    "created_at": "2026-01-01T00:00:00",
+                },
+                {
+                    "id": "idea-002",
+                    "description": "stale unfinished run",
+                    "status": "running",
+                    "priority": 2,
+                    "claimed_by": "worker-1",
+                    "claim_token": "claim-2",
+                    "execution_id": "exec-002",
+                    "frontier_id": "frontier-002",
+                    "hypothesis_id": "hyp-002",
+                    "experiment_spec_id": "spec-002",
+                    "protocol": "research-v1",
+                    "created_at": "2026-01-01T00:00:00",
+                },
+            ],
+        )
+        manager = TrackingManager(
+            [
+                {
+                    "host": "local",
+                    "device": 4,
+                    "memory_total": 49140,
+                    "memory_used": 0,
+                    "memory_free": 48520,
+                    "utilization": 0,
+                    "reservations": [
+                        {
+                            "id": "res-1",
+                            "tag": "worker-0",
+                            "kind": "experiment",
+                            "execution_id": "exec-001",
+                            "frontier_id": "frontier-001",
+                        }
+                    ],
+                },
+                {
+                    "host": "local",
+                    "device": 5,
+                    "memory_total": 49140,
+                    "memory_used": 0,
+                    "memory_free": 48520,
+                    "utilization": 0,
+                    "reservations": [
+                        {
+                            "id": "res-2",
+                            "tag": "worker-1",
+                            "kind": "experiment",
+                            "execution_id": "exec-002",
+                            "frontier_id": "frontier-002",
+                        }
+                    ],
+                },
+                {
+                    "host": "local",
+                    "device": 6,
+                    "memory_total": 49140,
+                    "memory_used": 0,
+                    "memory_free": 48520,
+                    "utilization": 0,
+                    "reservations": [
+                        {
+                            "id": "pin-6",
+                            "tag": "user_pinned_excluded",
+                            "kind": "user_pin",
+                        }
+                    ],
+                },
+            ]
+        )
+        output_lines: list[str] = []
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=lambda: MagicMock(),
+            max_workers=1,
+            on_output=output_lines.append,
+            runtime_plugins=WorkerRuntimePlugins(gpu_allocator=NoopAllocator(manager)),
+        )
+
+        wm._reconcile_parallel_runtime_state()
+
+        ideas = {item["id"]: item for item in idea_pool.all_ideas()}
+        assert ideas["idea-001"]["status"] == "done"
+        assert ideas["idea-001"]["result"] == {"metric_value": 0.321, "verdict": "kept"}
+        assert ideas["idea-002"]["status"] == "pending"
+        assert len(manager.released) == 2
+        assert {item["id"] for item in manager.released} == {"res-1", "res-2"}
+        assert manager._status[2]["reservations"][0]["id"] == "pin-6"
+        assert any("Reconciled stale running idea idea-001" in line for line in output_lines)
+        assert any("Released 2 stale GPU reservation" in line for line in output_lines)
+
+
+def test_worker_manager_preserves_active_detached_runtime_state():
+    class TrackingManager:
+        def __init__(self, status_rows: list[dict]) -> None:
+            self._status = status_rows
+            self.released: list[dict] = []
+
+        def refresh(self):
+            return self._status
+
+        def release_reservations(self, reservations):
+            self.released.extend(reservations)
+
+    class NoopAllocator:
+        default_memory_per_worker_mb = 4096
+
+        def __init__(self, manager) -> None:
+            self.manager = manager
+
+        def worker_slots(self, max_workers: int):
+            return []
+
+        def select_claimable_idea(self, pending_ideas: list[dict]) -> str | None:
+            return None
+
+        def allocate_for_idea(self, worker_id: str, idea: dict, preferred=None):
+            return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "detached run still active",
+                    "status": "running",
+                    "priority": 1,
+                    "claimed_by": "worker-0",
+                    "claim_token": "claim-1",
+                    "execution_id": "exec-001",
+                    "frontier_id": "frontier-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "protocol": "research-v1",
+                    "created_at": "2026-01-01T00:00:00",
+                }
+            ],
+        )
+        sleeper = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(1.0)"],
+            start_new_session=True,
+        )
+        try:
+            runtime_path = research / "runtime" / "idea-001__exec-001.json"
+            runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_path.write_text(
+                json.dumps(
+                    {
+                        "idea_id": "idea-001",
+                        "execution_id": "exec-001",
+                        "frontier_id": "frontier-001",
+                        "active": True,
+                        "status": "running",
+                        "pid": sleeper.pid,
+                        "pgid": sleeper.pid,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = TrackingManager(
+                [
+                    {
+                        "host": "local",
+                        "device": 4,
+                        "memory_total": 49140,
+                        "memory_used": 0,
+                        "memory_free": 48520,
+                        "utilization": 0,
+                        "reservations": [
+                            {
+                                "id": "res-1",
+                                "tag": "worker-0",
+                                "kind": "experiment",
+                                "execution_id": "exec-001",
+                                "frontier_id": "frontier-001",
+                            }
+                        ],
+                    }
+                ]
+            )
+            wm = WorkerManager(
+                repo_path=tmp_path,
+                research_dir=research,
+                gpu_manager=None,
+                idea_pool=idea_pool,
+                agent_factory=lambda: MagicMock(),
+                max_workers=1,
+                on_output=lambda line: None,
+                runtime_plugins=WorkerRuntimePlugins(gpu_allocator=NoopAllocator(manager)),
+            )
+
+            wm._reconcile_parallel_runtime_state()
+
+            ideas = {item["id"]: item for item in idea_pool.all_ideas()}
+            assert ideas["idea-001"]["status"] == "running"
+            assert manager.released == []
+        finally:
+            sleeper.terminate()
+            sleeper.wait(timeout=5)
 
 
 def test_worker_manager_rolls_back_failed_run_in_main_repo():

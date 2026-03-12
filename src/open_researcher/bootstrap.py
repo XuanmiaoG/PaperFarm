@@ -398,14 +398,87 @@ def _venv_root_from_python(python_executable: str) -> Path | None:
     return root if pyvenv_cfg.exists() else None
 
 
-def _command_env(python_executable: str) -> dict[str, str]:
-    env = dict(os.environ)
+def _conda_exe_name() -> str:
+    return "conda.exe" if os.name == "nt" else "conda"
+
+
+def _conda_bin_dir(root: Path) -> Path:
+    return root / ("Scripts" if os.name == "nt" else "bin")
+
+
+def _conda_layout_from_python(python_executable: str) -> tuple[Path | None, Path | None, Path | None]:
+    path = Path(python_executable)
+    if not path.exists():
+        return None, None, None
+    if path.parent.name not in {"bin", "Scripts"}:
+        return None, None, None
+
+    prefix = path.parent.parent
+    if not (prefix / "conda-meta").is_dir():
+        return None, None, None
+
+    candidate_roots: list[Path] = []
+    env_conda_exe = str(os.environ.get("CONDA_EXE", "")).strip()
+    if env_conda_exe:
+        env_path = Path(env_conda_exe)
+        if env_path.exists():
+            candidate_roots.append(env_path.parent.parent)
+    if prefix.parent.name == "envs":
+        candidate_roots.append(prefix.parent.parent)
+    candidate_roots.append(prefix)
+
+    seen: set[Path] = set()
+    for root in candidate_roots:
+        root = root.resolve()
+        if root in seen:
+            continue
+        seen.add(root)
+        conda_exe = _conda_bin_dir(root) / _conda_exe_name()
+        if conda_exe.exists():
+            return prefix, root, conda_exe
+    return prefix, None, None
+
+
+def _prepend_path(path_value: str, entries: list[Path]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        raw = str(entry)
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        parts.append(raw)
+    for raw in str(path_value or "").split(os.pathsep):
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        parts.append(raw)
+    return os.pathsep.join(parts)
+
+
+def command_env_for_python(python_executable: str, *, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env) if base_env is not None else dict(os.environ)
+    path_entries: list[Path] = []
     venv_root = _venv_root_from_python(python_executable)
     if venv_root is not None:
-        bin_dir = _venv_bin_dir(venv_root)
-        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        path_entries.append(_venv_bin_dir(venv_root))
         env["VIRTUAL_ENV"] = str(venv_root)
+    conda_prefix, conda_root, conda_exe = _conda_layout_from_python(python_executable)
+    if conda_prefix is not None:
+        path_entries.append(_venv_bin_dir(conda_prefix))
+        env["CONDA_PREFIX"] = str(conda_prefix)
+        env.setdefault("CONDA_DEFAULT_ENV", conda_prefix.name or "base")
+    if conda_root is not None:
+        path_entries.append(_conda_bin_dir(conda_root))
+    if conda_exe is not None:
+        env["CONDA_EXE"] = str(conda_exe)
+    if path_entries:
+        env["PATH"] = _prepend_path(env.get("PATH", ""), path_entries)
     return env
+
+
+def _command_env(python_executable: str) -> dict[str, str]:
+    return command_env_for_python(python_executable)
 
 
 def _ambient_command_env(python_executable: str) -> dict[str, str]:

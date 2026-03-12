@@ -5,44 +5,19 @@ import logging
 import os
 import shutil
 import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+from open_researcher.workspace_paths import (
+    normalize_relative_path,
+    runtime_git_exclude_patterns,
+    runtime_output_roots,
+    should_skip_overlay_path,
+)
 
 logger = logging.getLogger(__name__)
 
 _WORKTREE_ROOT_PREFIX = ".open-researcher-worktrees-"
-_WORKTREE_EXCLUDE_PATTERNS = ("/.research", "/.research/")
-_OVERLAY_SKIP_PARTS = {
-    ".git",
-    ".research",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-    ".tox",
-    ".nox",
-    ".venv",
-    "venv",
-    "env",
-    "node_modules",
-    "dist",
-    "build",
-    "coverage",
-    "htmlcov",
-    "wandb",
-    ".wandb",
-    "work_dirs",
-    "outputs",
-    "runs",
-    "artifacts",
-    "checkpoints",
-    "logs",
-    "log",
-    "tmp",
-    "temp",
-    "dataset",
-    "datasets",
-    "data",
-}
+_WORKTREE_EXCLUDE_PATTERNS = tuple(runtime_git_exclude_patterns())
 _OVERLAY_ALLOWED_FILENAMES = {
     ".env",
     ".envrc",
@@ -133,6 +108,8 @@ def create_worktree(repo_path: Path, worktree_name: str) -> Path:
         _replace_research_dir(wt_path, research_dir)
         _ensure_worktree_exclude_patterns(wt_path, _WORKTREE_EXCLUDE_PATTERNS)
         _sync_source_overlays(repo_path, wt_path)
+        _sanitize_runtime_artifacts(wt_path)
+        _mark_runtime_artifacts_skip_worktree(wt_path)
     except Exception as exc:
         try:
             remove_worktree(repo_path, wt_path)
@@ -237,7 +214,7 @@ def _iter_untracked_overlay_paths(repo_path: Path) -> list[Path]:
         code = line[:2]
         if code not in {"??", "!!"}:
             continue
-        normalized = _normalize_relative_path(line[3:])
+        normalized = normalize_relative_path(line[3:])
         if not normalized:
             continue
         relative = Path(normalized)
@@ -247,17 +224,9 @@ def _iter_untracked_overlay_paths(repo_path: Path) -> list[Path]:
         overlay_paths.append(relative)
     return sorted(set(overlay_paths))
 
-
-def _normalize_relative_path(raw_path: str) -> str:
-    normalized = raw_path.strip().replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized
-
-
 def _should_copy_overlay_path(relative_path: Path, source: Path) -> bool:
-    normalized = PurePosixPath(relative_path.as_posix())
-    if any(part in _OVERLAY_SKIP_PARTS for part in normalized.parts):
+    normalized = relative_path.as_posix()
+    if should_skip_overlay_path(normalized):
         return False
     if not source.exists() and not source.is_symlink():
         return False
@@ -265,9 +234,9 @@ def _should_copy_overlay_path(relative_path: Path, source: Path) -> bool:
         return False
     if source.is_file() and source.stat().st_size > _OVERLAY_MAX_BYTES:
         return False
-    if normalized.name in _OVERLAY_ALLOWED_FILENAMES:
+    if relative_path.name in _OVERLAY_ALLOWED_FILENAMES:
         return True
-    return normalized.suffix.lower() in _OVERLAY_ALLOWED_SUFFIXES
+    return relative_path.suffix.lower() in _OVERLAY_ALLOWED_SUFFIXES
 
 
 def _copy_overlay_path(source: Path, target: Path) -> None:
@@ -285,6 +254,62 @@ def _remove_existing_path(target: Path) -> None:
         return
     if target.is_dir():
         shutil.rmtree(target)
+
+
+def _sanitize_runtime_artifacts(worktree_path: Path) -> None:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown git status error"
+        raise WorktreeError(f"git status for runtime artifact cleanup failed: {detail}")
+
+    tracked_to_restore: list[str] = []
+    untracked_to_remove: list[str] = []
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        path = line[3:]
+        if " -> " in path and ("R" in code or "C" in code):
+            _old_path, path = path.split(" -> ", 1)
+        normalized = normalize_relative_path(path)
+        if not normalized or not should_skip_overlay_path(normalized):
+            continue
+        if code in {"??", "!!"}:
+            untracked_to_remove.append(normalized)
+        else:
+            tracked_to_restore.append(normalized)
+
+    for path in sorted(set(untracked_to_remove), reverse=True):
+        _remove_existing_path(worktree_path / path)
+    if tracked_to_restore:
+        _run_git(worktree_path, "checkout", "--", *sorted(set(tracked_to_restore)))
+
+
+def _mark_runtime_artifacts_skip_worktree(worktree_path: Path) -> None:
+    roots = list(runtime_output_roots())
+    if not roots:
+        return
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", *roots],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise WorktreeError(f"git ls-files for runtime artifact paths failed: {detail or 'unknown git error'}")
+    paths = [item.decode("utf-8", errors="replace") for item in result.stdout.split(b"\x00") if item]
+    if not paths:
+        return
+    chunk_size = 256
+    for start in range(0, len(paths), chunk_size):
+        chunk = paths[start : start + chunk_size]
+        _run_git(worktree_path, "update-index", "--skip-worktree", "--", *chunk)
 
 
 def remove_worktree(repo_path: Path, worktree_path: Path) -> None:

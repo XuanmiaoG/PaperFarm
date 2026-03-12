@@ -1,5 +1,6 @@
 """Tests for git runtime safety helpers."""
 
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -34,3 +35,22 @@ def test_capture_and_rollback_preserve_runtime_state_but_clean_code_changes():
         assert (repo / "hello.py").read_text(encoding="utf-8") == "print('hello')\n"
         assert not (repo / "scratch.txt").exists()
         assert (research / "results.tsv").exists()
+
+
+def test_capture_clean_workspace_ignores_runtime_artifacts_and_backups():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_git_repo(repo)
+        (repo / "work_dirs" / "results").mkdir(parents=True)
+        (repo / "work_dirs" / "results" / "metrics.csv").write_text("mAP,0.5\n", encoding="utf-8")
+        subprocess.run(["git", "add", "work_dirs/results/metrics.csv"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add runtime artifacts"], cwd=str(repo), capture_output=True, check=True)
+
+        shutil.rmtree(repo / "work_dirs")
+        backup = repo / ".research.bak_20260313_013614" / ".internal"
+        backup.mkdir(parents=True)
+        (backup / "critic.md").write_text("backup\n", encoding="utf-8")
+
+        snapshot = capture_clean_workspace_snapshot(repo)
+        rollback_workspace(repo, snapshot)
+        assert (backup / "critic.md").exists()

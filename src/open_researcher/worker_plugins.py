@@ -322,6 +322,8 @@ class GPUAllocatorPlugin:
         metadata = {
             "kind": "experiment",
             "task_kind": str(idea.get("workload_label", "")).strip(),
+            "idea_id": str(idea.get("id", "")).strip(),
+            "worker_id": str(worker_id or "").strip(),
             "frontier_id": str(idea.get("frontier_id", "")).strip(),
             "execution_id": str(idea.get("execution_id", "")).strip(),
             "resource_profile": str(

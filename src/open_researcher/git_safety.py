@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-_RUNTIME_STATE_PREFIXES = (".research",)
+from open_researcher.workspace_paths import is_runtime_artifact_path, normalize_relative_path
 
 
 class GitWorkspaceError(RuntimeError):
@@ -74,21 +74,10 @@ def _workspace_changes(repo_path: Path) -> list[GitStatusEntry]:
         path = line[3:]
         if " -> " in path and ("R" in code or "C" in code):
             _old_path, path = path.split(" -> ", 1)
-        normalized = _normalize_path(path)
-        if normalized and not _is_runtime_state_path(normalized):
+        normalized = normalize_relative_path(path)
+        if normalized and not is_runtime_artifact_path(normalized):
             changes.append(GitStatusEntry(code=code, path=normalized))
     return changes
-
-
-def _normalize_path(raw_path: str) -> str:
-    normalized = raw_path.strip().replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized
-
-
-def _is_runtime_state_path(path: str) -> bool:
-    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in _RUNTIME_STATE_PREFIXES)
 
 
 def _format_changes(changes: list[GitStatusEntry], *, limit: int = 5) -> str:

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shlex
+import stat
 import sys
 from pathlib import Path
+
+import pytest
 
 from open_researcher.bootstrap import (
     format_bootstrap_dry_run,
@@ -17,6 +21,12 @@ from open_researcher.config import ResearchConfig
 
 def _py_inline(code: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
 def test_resolve_bootstrap_plan_detects_python_defaults(tmp_path: Path, monkeypatch) -> None:
@@ -149,6 +159,52 @@ def test_run_bootstrap_prepare_reuses_ready_workspace_before_install_and_data(tm
     assert "smoke_preflight" in prepare_log
     assert "install ==" not in prepare_log
     assert "data ==" not in prepare_log
+
+
+@pytest.mark.skipif(os.name == "nt", reason="conda shim test uses POSIX shell wrappers")
+def test_run_bootstrap_prepare_supports_conda_run_from_bootstrap_python(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("CONDA_EXE", raising=False)
+    research = tmp_path / ".research"
+    research.mkdir()
+    conda_root = tmp_path / "miniconda3"
+    env_prefix = conda_root / "envs" / "iraod"
+    (env_prefix / "conda-meta").mkdir(parents=True)
+
+    python_shim = env_prefix / "bin" / "python"
+    conda_shim = conda_root / "bin" / "conda"
+    _write_executable(
+        python_shim,
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+    )
+    _write_executable(
+        conda_shim,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "if [ \"$1\" = \"run\" ] && [ \"$2\" = \"-n\" ]; then\n"
+        "  shift 3\n"
+        "  exec \"$@\"\n"
+        "fi\n"
+        "echo unsupported conda shim invocation >&2\n"
+        "exit 2\n",
+    )
+    cfg = ResearchConfig(
+        bootstrap_auto_prepare=True,
+        bootstrap_python=str(python_shim),
+        bootstrap_smoke_command=(
+            "conda run -n iraod python -c "
+            + shlex.quote("from pathlib import Path; Path('smoke.ok').write_text('ok')")
+        ),
+    )
+
+    code, state = run_bootstrap_prepare(tmp_path, research, cfg)
+
+    assert code == 0
+    assert state["status"] == "completed"
+    assert state["smoke"]["status"] == "completed"
+    assert (tmp_path / "smoke.ok").exists()
+    prepare_log = (research / "prepare.log").read_text(encoding="utf-8")
+    assert "conda: command not found" not in prepare_log
 
 
 def test_run_bootstrap_prepare_retries_smoke_before_falling_back_to_install(tmp_path: Path) -> None:

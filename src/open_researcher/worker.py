@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Callable
 
 from open_researcher.activity import ActivityMonitor
+from open_researcher.bootstrap import command_env_for_python, read_bootstrap_state
+from open_researcher.config import load_config
 from open_researcher.control_plane import consume_skip_current, read_control
 from open_researcher.git_safety import (
     GitWorkspaceError,
@@ -102,11 +104,13 @@ class WorkerManager:
         self._backfill_threshold_minutes = max(int(backfill_threshold_minutes or 0), 1)
         self._resource_deadlocks = 0
         self._resource_deadlock_lock = threading.Lock()
+        self._runtime_shell_env = self._resolve_runtime_shell_env()
 
     def start(self) -> None:
         """Start worker threads based on available GPUs."""
         self._stop.clear()
         self._workers.clear()
+        self._reconcile_parallel_runtime_state()
         slots: list[dict | None]
         if self._plugins.gpu_allocator is not None:
             slots = self._plugins.gpu_allocator.worker_slots(self.max_workers)
@@ -614,6 +618,163 @@ class WorkerManager:
             time.sleep(0.2)
         return False
 
+    def _resolve_runtime_shell_env(self) -> dict[str, str]:
+        python_executable = ""
+        try:
+            state = read_bootstrap_state(self.research_dir / "bootstrap_state.json")
+            python_executable = str(state.get("python_env", {}).get("executable", "")).strip()
+        except Exception:
+            python_executable = ""
+        if not python_executable:
+            try:
+                cfg = load_config(self.research_dir, strict=False)
+                candidate = str(getattr(cfg, "bootstrap_python", "") or "").strip()
+                if candidate:
+                    path = Path(candidate)
+                    if not path.is_absolute():
+                        path = (self.repo_path / candidate).resolve()
+                    python_executable = str(path)
+            except Exception:
+                python_executable = ""
+        if not python_executable:
+            return {}
+        resolved = command_env_for_python(python_executable)
+        overrides: dict[str, str] = {}
+        for key in ("PATH", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_EXE"):
+            value = str(resolved.get(key, "")).strip()
+            if value:
+                overrides[key] = value
+        return overrides
+
+    def _active_detached_runtime_refs(self) -> tuple[set[str], set[str], set[str]]:
+        runtime_dir = self.research_dir / "runtime"
+        idea_ids: set[str] = set()
+        execution_ids: set[str] = set()
+        frontier_ids: set[str] = set()
+        if not runtime_dir.exists():
+            return idea_ids, execution_ids, frontier_ids
+        for path in runtime_dir.glob("*.json"):
+            name = path.name
+            if name.endswith("__saturation_context.json") or name.endswith("__saturation_selection.json"):
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if not self._detached_process_alive(payload):
+                continue
+            idea_id = str(payload.get("idea_id", "")).strip()
+            execution_id = str(payload.get("execution_id", "")).strip()
+            frontier_id = str(payload.get("frontier_id", "")).strip()
+            if idea_id:
+                idea_ids.add(idea_id)
+            if execution_id:
+                execution_ids.add(execution_id)
+            if frontier_id:
+                frontier_ids.add(frontier_id)
+        return idea_ids, execution_ids, frontier_ids
+
+    @staticmethod
+    def _reservation_matches_runtime(reservation: dict, *, idea_ids: set[str], execution_ids: set[str], frontier_ids: set[str]) -> bool:
+        idea_id = str(reservation.get("idea_id", "")).strip()
+        execution_id = str(reservation.get("execution_id", "")).strip()
+        frontier_id = str(reservation.get("frontier_id", "")).strip()
+        return bool(
+            (idea_id and idea_id in idea_ids)
+            or (execution_id and execution_id in execution_ids)
+            or (frontier_id and frontier_id in frontier_ids)
+        )
+
+    @staticmethod
+    def _is_reconcilable_experiment_reservation(reservation: dict) -> bool:
+        kind = str(reservation.get("kind", "")).strip()
+        tag = str(reservation.get("tag", "")).strip()
+        if kind == "experiment":
+            return True
+        return bool(tag.startswith("worker-") and kind in {"", "legacy"})
+
+    def _reconcile_parallel_runtime_state(self) -> None:
+        allocator = self._plugins.gpu_allocator
+        active_idea_ids, active_execution_ids, active_frontier_ids = self._active_detached_runtime_refs()
+        restored_pending = 0
+        finalized_done = 0
+        for idea in self.idea_pool.all_ideas():
+            if str(idea.get("status", "")).strip() != "running":
+                continue
+            idea_id = str(idea.get("id", "")).strip()
+            execution_id = str(idea.get("execution_id", "")).strip()
+            frontier_id = str(idea.get("frontier_id", "")).strip()
+            if (
+                (idea_id and idea_id in active_idea_ids)
+                or (execution_id and execution_id in active_execution_ids)
+                or (frontier_id and frontier_id in active_frontier_ids)
+            ):
+                continue
+            matched_row = self._find_matching_result_row(
+                self.repo_path,
+                results_before_count=0,
+                idea=idea,
+            )
+            if matched_row is not None:
+                metric_value, verdict = self._result_payload_from_row(matched_row)
+                if self.idea_pool.mark_done(idea_id, metric_value=metric_value, verdict=verdict):
+                    finalized_done += 1
+                    self.on_output(
+                        f"[system] Reconciled stale running idea {idea_id} to done from existing recorded result"
+                    )
+                    continue
+            if self.idea_pool.update_status(idea_id, "pending"):
+                restored_pending += 1
+                self.on_output(f"[system] Requeued stale running idea {idea_id} back to pending")
+
+        released = 0
+        if allocator is not None:
+            try:
+                status = allocator.manager.refresh()
+            except Exception:
+                status = []
+            stale_reservations: list[dict] = []
+            for gpu in status if isinstance(status, list) else []:
+                for reservation in gpu.get("reservations", []):
+                    if not isinstance(reservation, dict):
+                        continue
+                    if not self._is_reconcilable_experiment_reservation(reservation):
+                        continue
+                    if self._reservation_matches_runtime(
+                        reservation,
+                        idea_ids=active_idea_ids,
+                        execution_ids=active_execution_ids,
+                        frontier_ids=active_frontier_ids,
+                    ):
+                        continue
+                    stale_reservations.append(
+                        {
+                            "host": str(gpu.get("host", "local")).strip() or "local",
+                            "device": int(gpu.get("device", 0) or 0),
+                            **reservation,
+                        }
+                    )
+            if stale_reservations:
+                allocator.manager.release_reservations(stale_reservations)
+                allocator.manager.refresh()
+                released = len(stale_reservations)
+                self.on_output(
+                    f"[system] Released {released} stale GPU reservation(s) from previous interrupted runs"
+                )
+
+        if restored_pending or finalized_done or released:
+            self._activity.update(
+                "experiment_agent",
+                status="idle",
+                detail=(
+                    "reconciled stale runtime state "
+                    f"(pending={restored_pending}, done={finalized_done}, released_gpu={released})"
+                ),
+                idea="",
+            )
+
     def _claim_next_runnable_idea(self, worker_name: str, slot_hint: dict | None):
         allocator = self._plugins.gpu_allocator
         if allocator is None:
@@ -899,6 +1060,7 @@ class WorkerManager:
                         on_timeout=_on_timeout,
                     )
                     run_env = {
+                        **self._runtime_shell_env,
                         **gpu_env,
                         "OPEN_RESEARCHER_MEMORY_POLICY": (
                             "rank_historical_success" if memory_context is not None else "disabled"

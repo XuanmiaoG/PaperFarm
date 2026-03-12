@@ -14,6 +14,7 @@ from open_researcher.bootstrap import ensure_bootstrap_state
 from open_researcher.research_graph import ResearchGraphStore
 from open_researcher.research_memory import ResearchMemoryStore
 from open_researcher.role_programs import ensure_internal_role_programs
+from open_researcher.workspace_paths import runtime_git_exclude_patterns
 
 
 def _git_info_exclude_path(repo_path: Path) -> Path | None:
@@ -130,7 +131,7 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
 
     # .research is runtime state; keep it out of git history so parallel
     # worktrees can safely replace the directory with a shared symlink.
-    _ensure_git_exclude_patterns(repo_path, ["/.research", "/.research/"])
+    _ensure_git_exclude_patterns(repo_path, runtime_git_exclude_patterns())
 
     print(f"[OK] Initialized .research/ with tag '{tag}'")
     print(f"     Branch: research/{tag}")

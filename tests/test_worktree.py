@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock
 
 from open_researcher.idea_pool import IdeaPool
 from open_researcher.storage import atomic_write_json
+from open_researcher.git_safety import capture_clean_workspace_snapshot
 from open_researcher.worktree import create_worktree, remove_worktree, worktrees_root
 
 
@@ -225,6 +227,42 @@ def test_worktree_excludes_shared_research_symlink_from_git_status():
             check=True,
         ).stdout
         assert ".research" not in staged
+
+        remove_worktree(repo, wt_path)
+
+
+def test_worktree_restores_runtime_artifacts_and_skips_backup_overlays():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_git_repo(repo)
+        _setup_research(repo)
+        work_dirs = repo / "work_dirs" / "results"
+        work_dirs.mkdir(parents=True)
+        tracked_runtime = work_dirs / "metrics.csv"
+        tracked_runtime.write_text("mAP,0.1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "work_dirs/results/metrics.csv"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "track runtime output"], cwd=str(repo), capture_output=True, check=True)
+
+        shutil.rmtree(repo / "work_dirs")
+        backup = repo / ".research.bak_20260313_013614" / ".internal"
+        backup.mkdir(parents=True)
+        (backup / "experiment.md").write_text("backup\n", encoding="utf-8")
+
+        wt_path = create_worktree(repo, "runtime-sanitize")
+
+        assert (wt_path / "work_dirs" / "results" / "metrics.csv").exists()
+        assert not (wt_path / ".research.bak_20260313_013614").exists()
+        capture_clean_workspace_snapshot(wt_path)
+
+        (wt_path / "work_dirs" / "results" / "metrics.csv").write_text("mAP,0.9\n", encoding="utf-8")
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "work_dirs" not in status
 
         remove_worktree(repo, wt_path)
 
