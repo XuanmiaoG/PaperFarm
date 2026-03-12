@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +20,48 @@ env:
   UV_CACHE_DIR: /tmp/.uv-cache
 
 jobs:
+  # ── Path-based change detection ───────────────────────────────────
+  # Inverted logic: '**' matches every file, then '!' excludes docs/images.
+  # If ANY changed file is NOT a doc, 'code' is true → run CI.
+  # If ALL changed files are docs/images, 'code' is false → skip CI.
+  # On push/workflow_dispatch the filter always evaluates to true.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!plans/**'
+              - '!docs/**/*.md'
+              - '!CHANGELOG.md'
+              - '!CONTRIBUTING.md'
+              - '!**/*.png'
+              - '!**/*.jpg'
+              - '!**/*.svg'
+              - '!LICENSE'
+              - '!.gitignore'
+      - id: decide
+        run: |
+          # On push/workflow_dispatch always run; on PR skip if only docs changed
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.filter.outputs.code }}" == "true" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Lint ──────────────────────────────────────────────────────────
   lint:
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -42,8 +84,10 @@ jobs:
       - name: Lint
         run: make lint
 
+  # ── Test matrix ───────────────────────────────────────────────────
   test:
-    needs: lint
+    needs: [lint, changes]
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -70,8 +114,10 @@ jobs:
       - name: Test
         run: pytest tests/ -q
 
+  # ── Coverage ──────────────────────────────────────────────────────
   coverage:
-    needs: lint
+    needs: [lint, changes]
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -105,8 +151,10 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
+  # ── Package smoke test ────────────────────────────────────────────
   package-smoke:
-    needs: lint
+    needs: [lint, changes]
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
