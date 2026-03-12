@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -20,7 +21,8 @@ from open_researcher.git_safety import (
 )
 from open_researcher.gpu_manager import GPUManager
 from open_researcher.idea_pool import IdeaPool
-from open_researcher.results_cmd import load_results
+from open_researcher.resource_scheduler import classify_single_gpu_saturation_status
+from open_researcher.results_cmd import augment_result_secondary_metrics, load_results
 from open_researcher.role_programs import resolve_role_program_file
 from open_researcher.storage import atomic_write_json
 from open_researcher.watchdog import TimeoutWatchdog
@@ -42,6 +44,16 @@ class DetachedRunOutcome:
     run_code: int = 1
     should_requeue: bool = False
     stop_after_finalize: bool = False
+
+
+@dataclass(slots=True)
+class GPURunTelemetry:
+    """Observed device memory usage for one experiment run."""
+
+    baseline_memory_used_mb: int | None = None
+    peak_memory_used_mb: int | None = None
+    peak_task_memory_mb: int | None = None
+    samples: int = 0
 
 
 class WorkerManager:
@@ -262,6 +274,134 @@ class WorkerManager:
         path = self._detached_state_path(idea)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, payload)
+
+    def _saturation_context_path(self, idea: dict) -> Path:
+        idea_id = self._safe_state_component(str(idea.get("id", "")).strip(), "idea")
+        execution_id = self._safe_state_component(str(idea.get("execution_id", "")).strip(), "exec")
+        return self.research_dir / "runtime" / f"{idea_id}__{execution_id}__saturation_context.json"
+
+    def _saturation_selection_path(self, idea: dict) -> Path:
+        idea_id = self._safe_state_component(str(idea.get("id", "")).strip(), "idea")
+        execution_id = self._safe_state_component(str(idea.get("execution_id", "")).strip(), "exec")
+        return self.research_dir / "runtime" / f"{idea_id}__{execution_id}__saturation_selection.json"
+
+    def _write_saturation_context(self, idea: dict, allocation) -> str:
+        context = dict(getattr(allocation, "saturation_context", {}) or {})
+        if not context:
+            return ""
+        context.update(
+            {
+                "idea_id": str(idea.get("id", "")).strip(),
+                "execution_id": str(idea.get("execution_id", "")).strip(),
+                "frontier_id": str(idea.get("frontier_id", "")).strip(),
+                "selected_profile": str(context.get("selected_profile", "")).strip(),
+                "default_profile": str(
+                    context.get("default_profile", "")
+                    or getattr(allocation, "selected_profile", {}).get("name", "")
+                    or idea.get("resource_profile", "")
+                ).strip(),
+                "execution_shape": getattr(allocation, "execution_shape", {}) or context.get("execution_shape", {}),
+            }
+        )
+        path = self._saturation_context_path(idea)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, context)
+        return str(path)
+
+    def _load_saturation_selection(self, idea: dict) -> dict:
+        path = self._saturation_selection_path(idea)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+
+    @staticmethod
+    def _local_gpu_memory_snapshot(devices: list[dict]) -> dict[int, dict[str, int]]:
+        if not devices or any(str(item.get("host", "local")).strip() not in {"", "local"} for item in devices):
+            return {}
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.total,memory.used,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, OSError):
+            return {}
+        if result.returncode != 0:
+            return {}
+        requested = {
+            int(item.get("device", -1))
+            for item in devices
+            if isinstance(item, dict) and str(item.get("host", "local")).strip() in {"", "local"}
+        }
+        snapshot: dict[int, dict[str, int]] = {}
+        for line in result.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 4:
+                continue
+            try:
+                device = int(parts[0])
+                total_mb = int(parts[1])
+                used_mb = int(parts[2])
+                free_mb = int(parts[3])
+            except ValueError:
+                continue
+            if device not in requested:
+                continue
+            snapshot[device] = {
+                "memory_total": total_mb,
+                "memory_used": used_mb,
+                "memory_free": free_mb,
+            }
+        return snapshot
+
+    def _start_gpu_telemetry_monitor(self, allocation) -> tuple[GPURunTelemetry, Callable[[], None] | None]:
+        telemetry = GPURunTelemetry()
+        devices = list(getattr(allocation, "devices", []) or [])
+        if not devices:
+            return telemetry, None
+        initial = self._local_gpu_memory_snapshot(devices)
+        if not initial:
+            return telemetry, None
+        baseline_used = sum(int(item.get("memory_used", 0) or 0) for item in initial.values())
+        telemetry.baseline_memory_used_mb = baseline_used
+        telemetry.peak_memory_used_mb = baseline_used
+        telemetry.peak_task_memory_mb = 0
+        stop_event = threading.Event()
+
+        def _sample_once() -> None:
+            snapshot = self._local_gpu_memory_snapshot(devices)
+            if not snapshot:
+                return
+            total_used = sum(int(item.get("memory_used", 0) or 0) for item in snapshot.values())
+            telemetry.samples += 1
+            telemetry.peak_memory_used_mb = max(int(telemetry.peak_memory_used_mb or 0), total_used)
+            baseline = int(telemetry.baseline_memory_used_mb or 0)
+            telemetry.peak_task_memory_mb = max(int(telemetry.peak_task_memory_mb or 0), max(total_used - baseline, 0))
+
+        def _poll() -> None:
+            while not stop_event.wait(0.5):
+                _sample_once()
+
+        thread = threading.Thread(target=_poll, daemon=True)
+        thread.start()
+
+        def _stop() -> None:
+            stop_event.set()
+            thread.join(timeout=2)
+            _sample_once()
+
+        return telemetry, _stop
 
     @staticmethod
     def _detached_process_alive(state: dict | None) -> bool:
@@ -513,7 +653,14 @@ class WorkerManager:
         return None, None, None
 
     @staticmethod
-    def _resource_observation(idea: dict, allocation, *, duration_seconds: float | None) -> dict:
+    def _resource_observation(
+        idea: dict,
+        allocation,
+        *,
+        duration_seconds: float | None,
+        gpu_telemetry: GPURunTelemetry | None = None,
+        saturation_selection: dict | None = None,
+    ) -> dict:
         observation: dict = {}
         if duration_seconds is not None:
             observation["duration_minutes"] = max(duration_seconds, 0.0) / 60.0
@@ -528,13 +675,79 @@ class WorkerManager:
                 observation["gpu_mem_reserved_mb"] = sum(int(item.get("memory_mb", 0) or 0) for item in reservations)
             if getattr(allocation, "resource_request", None):
                 observation["resource_request"] = allocation.resource_request
+            if getattr(allocation, "selected_profile", None):
+                selected_profile = getattr(allocation, "selected_profile", {}) or {}
+                profile_name = str(selected_profile.get("name", "")).strip()
+                if profile_name:
+                    observation["selected_resource_profile"] = profile_name
+                expected_memory_mb = int(selected_profile.get("expected_memory_mb", 0) or 0)
+                if expected_memory_mb > 0:
+                    observation["expected_peak_gpu_mem_mb"] = expected_memory_mb
+            if getattr(allocation, "saturation_context", None):
+                saturation_context = getattr(allocation, "saturation_context", {}) or {}
+                budget_mb = int(saturation_context.get("gpu_budget_mb", 0) or 0)
+                headroom_mb = int(saturation_context.get("headroom_mb", 0) or 0)
+                if budget_mb > 0:
+                    observation["gpu_budget_mb"] = budget_mb
+                if headroom_mb > 0:
+                    observation["gpu_headroom_mb"] = headroom_mb
+                if saturation_context:
+                    observation["single_gpu_saturation"] = True
         if idea.get("execution_shape"):
             observation["execution_shape"] = idea.get("execution_shape")
         if idea.get("workload_label"):
             observation["workload_label"] = str(idea.get("workload_label", "")).strip()
         if idea.get("resource_profile"):
             observation["resource_profile"] = str(idea.get("resource_profile", "")).strip()
+        if getattr(allocation, "execution_shape", None):
+            observation["execution_shape"] = getattr(allocation, "execution_shape")
+        if isinstance(saturation_selection, dict) and saturation_selection:
+            qualification_attempts = int(saturation_selection.get("qualification_attempts", 0) or 0)
+            if qualification_attempts > 0:
+                observation["qualification_attempts"] = qualification_attempts
+            selected_profile = str(
+                saturation_selection.get("selected_profile", "")
+                or saturation_selection.get("selected_resource_profile", "")
+            ).strip()
+            if selected_profile:
+                observation["selected_resource_profile"] = selected_profile
+            expected_peak = int(saturation_selection.get("expected_peak_gpu_mem_mb", 0) or 0)
+            if expected_peak > 0:
+                observation["expected_peak_gpu_mem_mb"] = expected_peak
+        if gpu_telemetry is not None and gpu_telemetry.peak_task_memory_mb is not None:
+            observation["observed_peak_gpu_mem_mb"] = max(int(gpu_telemetry.peak_task_memory_mb or 0), 0)
+        if observation.get("single_gpu_saturation"):
+            observation["saturation_status"] = classify_single_gpu_saturation_status(
+                gpu_budget_mb=int(observation.get("gpu_budget_mb", 0) or 0),
+                observed_peak_gpu_mem_mb=(
+                    int(observation.get("observed_peak_gpu_mem_mb", 0) or 0)
+                    if "observed_peak_gpu_mem_mb" in observation
+                    else None
+                ),
+                expected_peak_gpu_mem_mb=(
+                    int(observation.get("expected_peak_gpu_mem_mb", 0) or 0)
+                    if "expected_peak_gpu_mem_mb" in observation
+                    else None
+                ),
+            )
         return observation
+
+    def _resource_secondary_metrics_patch(
+        self,
+        idea: dict,
+        allocation,
+        *,
+        gpu_telemetry: GPURunTelemetry | None,
+        saturation_selection: dict | None,
+    ) -> dict:
+        observation = self._resource_observation(
+            idea,
+            allocation,
+            duration_seconds=None,
+            gpu_telemetry=gpu_telemetry,
+            saturation_selection=saturation_selection,
+        )
+        return {"_open_researcher_resources": observation} if observation else {}
 
     def _worker_loop(self, worker_id: int, gpu: dict | None) -> None:
         wid = f"worker-{worker_id}"
@@ -584,6 +797,9 @@ class WorkerManager:
                 notify_finished = True
                 stop_after_finalize = False
                 run_started_at = None
+                gpu_telemetry = GPURunTelemetry()
+                stop_gpu_telemetry: Callable[[], None] | None = None
+                saturation_selection: dict = {}
                 _token_metrics = None
                 try:
                     if not self._wait_until_unpaused():
@@ -627,7 +843,18 @@ class WorkerManager:
                         first_fix_action=first_fix_action,
                         gpu_reservations=(allocation.reservations if allocation is not None else []),
                         workload_label=str(idea.get("workload_label", "")).strip(),
-                        resource_profile=str(idea.get("resource_profile", "")).strip(),
+                        resource_profile=str(
+                            getattr(allocation, "selected_profile", {}).get("name", "")
+                            if allocation is not None
+                            else idea.get("resource_profile", "")
+                        ).strip()
+                        or str(idea.get("resource_profile", "")).strip(),
+                        saturation_mode=bool(getattr(allocation, "saturation_context", {}) if allocation is not None else {}),
+                        gpu_budget_mb=(
+                            int(getattr(allocation, "saturation_context", {}).get("gpu_budget_mb", 0) or 0)
+                            if allocation is not None
+                            else 0
+                        ),
                     )
                     self.on_output(f"[{wid}] Running: {idea_description[:60]}")
                     gpu_env = allocation.env if allocation is not None else {}
@@ -645,6 +872,8 @@ class WorkerManager:
                     for line in workspace.log_lines if workspace is not None else []:
                         self.on_output(line)
                     workspace_snapshot = capture_clean_workspace_snapshot(workdir)
+                    saturation_context_path = self._write_saturation_context(idea, allocation) if allocation is not None else ""
+                    gpu_telemetry, stop_gpu_telemetry = self._start_gpu_telemetry_monitor(allocation)
 
                     if self._on_experiment_started is not None:
                         try:
@@ -683,8 +912,14 @@ class WorkerManager:
                         "OPEN_RESEARCHER_EXECUTION_ID": str(idea.get("execution_id", "")).strip(),
                         "OPEN_RESEARCHER_HYPOTHESIS_ID": str(idea.get("hypothesis_id", "")).strip(),
                         "OPEN_RESEARCHER_EXPERIMENT_SPEC_ID": str(idea.get("experiment_spec_id", "")).strip(),
-                        "OPEN_RESEARCHER_RESOURCE_PROFILE": str(idea.get("resource_profile", "")).strip(),
+                        "OPEN_RESEARCHER_RESOURCE_PROFILE": str(
+                            getattr(allocation, "selected_profile", {}).get("name", "")
+                            if allocation is not None
+                            else idea.get("resource_profile", "")
+                        ).strip()
+                        or str(idea.get("resource_profile", "")).strip(),
                         "OPEN_RESEARCHER_WORKLOAD_LABEL": str(idea.get("workload_label", "")).strip(),
+                        "OPEN_RESEARCHER_SATURATION_CONTEXT_PATH": saturation_context_path,
                     }
                     run_env = {key: value for key, value in run_env.items() if value}
                     watchdog.reset()
@@ -698,8 +933,11 @@ class WorkerManager:
                         )
                     finally:
                         watchdog.stop()
+                        if stop_gpu_telemetry is not None:
+                            stop_gpu_telemetry()
                     run_code = int(code)
                     _token_metrics = getattr(agent, "last_token_metrics", None)
+                    saturation_selection = self._load_saturation_selection(idea)
                     strict_result_tracking = str(idea.get("protocol", "")).strip() == "research-v1"
                     current_state = self._current_idea_state(str(idea.get("id", "")))
                     matched_row = None
@@ -714,6 +952,16 @@ class WorkerManager:
                             )
                             result_status = self._result_status_from_row(matched_row)
                             if matched_row is not None:
+                                augment_result_secondary_metrics(
+                                    workdir,
+                                    row=matched_row,
+                                    patch=self._resource_secondary_metrics_patch(
+                                        idea,
+                                        allocation,
+                                        gpu_telemetry=gpu_telemetry,
+                                        saturation_selection=saturation_selection,
+                                    ),
+                                )
                                 metric_value, verdict = self._result_payload_from_row(matched_row)
                                 if not self._terminal_result_present(current_state):
                                     applied = self.idea_pool.mark_done(
@@ -729,6 +977,8 @@ class WorkerManager:
                                                 if run_started_at is not None
                                                 else None
                                             ),
+                                            gpu_telemetry=gpu_telemetry,
+                                            saturation_selection=saturation_selection,
                                         ),
                                     )
                                     if not applied:
@@ -750,6 +1000,16 @@ class WorkerManager:
                                 matched_row = detached_outcome.matched_row
                                 result_status = detached_outcome.result_status
                                 if matched_row is not None:
+                                    augment_result_secondary_metrics(
+                                        workdir,
+                                        row=matched_row,
+                                        patch=self._resource_secondary_metrics_patch(
+                                            idea,
+                                            allocation,
+                                            gpu_telemetry=gpu_telemetry,
+                                            saturation_selection=saturation_selection,
+                                        ),
+                                    )
                                     metric_value, verdict = self._result_payload_from_row(matched_row)
                                     current_state = self._current_idea_state(str(idea.get("id", "")))
                                     if not self._terminal_result_present(current_state):
@@ -766,6 +1026,8 @@ class WorkerManager:
                                                     if run_started_at is not None
                                                     else None
                                                 ),
+                                                gpu_telemetry=gpu_telemetry,
+                                                saturation_selection=saturation_selection,
                                             ),
                                         )
                                         if not applied:
@@ -808,6 +1070,8 @@ class WorkerManager:
                                     duration_seconds=(
                                         time.monotonic() - run_started_at if run_started_at is not None else None
                                     ),
+                                    gpu_telemetry=gpu_telemetry,
+                                    saturation_selection=saturation_selection,
                                 ),
                             )
                             if not applied:
@@ -827,6 +1091,8 @@ class WorkerManager:
                                     duration_seconds=(
                                         time.monotonic() - run_started_at if run_started_at is not None else None
                                     ),
+                                    gpu_telemetry=gpu_telemetry,
+                                    saturation_selection=saturation_selection,
                                 ),
                             )
                             if not applied:
@@ -871,6 +1137,8 @@ class WorkerManager:
                             duration_seconds=(
                                 time.monotonic() - run_started_at if run_started_at is not None else None
                             ),
+                            gpu_telemetry=gpu_telemetry,
+                            saturation_selection=saturation_selection,
                         ),
                     )
                     if not applied:
@@ -881,6 +1149,9 @@ class WorkerManager:
                 finally:
                     latest_idea = dict(idea)
                     try:
+                        if stop_gpu_telemetry is not None:
+                            stop_gpu_telemetry()
+                            stop_gpu_telemetry = None
                         if self._plugins.failure_memory is not None and memory_context is not None:
                             self._plugins.failure_memory.record(memory_context, run_code)
                     except Exception as exc:

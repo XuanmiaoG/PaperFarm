@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from open_researcher.results_cmd import (
+    augment_result_secondary_metrics,
     derive_final_results,
     load_results,
     print_results,
@@ -175,3 +176,23 @@ def test_write_final_results_tsv(tmp_path):
     write_final_results_tsv(tmp_path)
     final_results = (research / "final_results.tsv").read_text()
     assert final_results.startswith("timestamp\tcommit\tprimary_metric\tmetric_value\traw_status\tfinal_status\t")
+
+
+def test_augment_result_secondary_metrics_updates_matching_row(tmp_path):
+    research = tmp_path / ".research"
+    research.mkdir()
+    (research / "results.tsv").write_text(
+        "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+        "2026-03-08T10:00:00\ta1b2c3d\tmAP\t0.712300\t"
+        "\"{\"\"_open_researcher_trace\"\":{\"\"frontier_id\"\":\"\"frontier-001\"\",\"\"execution_id\"\":\"\"exec-001\"\"},\"\"_open_researcher_result_id\"\":\"\"rid-001\"\"}\"\tkeep\tidea-001\n"
+    )
+
+    updated = augment_result_secondary_metrics(
+        tmp_path,
+        row=load_results(tmp_path)[0],
+        patch={"_open_researcher_resources": {"selected_resource_profile": "single_gpu_large"}},
+    )
+
+    assert updated is True
+    secondary = json.loads(load_results(tmp_path)[0]["secondary_metrics"])
+    assert secondary["_open_researcher_resources"]["selected_resource_profile"] == "single_gpu_large"

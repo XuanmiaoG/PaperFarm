@@ -45,6 +45,7 @@ class ResearchConfig:
     scheduler_allow_backfill: bool = True
     scheduler_backfill_threshold_minutes: int = 30
     scheduler_preemption: str = "none"
+    scheduler_single_gpu_qualification_timeout_minutes: int = 10
     environment_text: str = ""
     bootstrap_auto_prepare: bool = True
     bootstrap_working_dir: str = "."
@@ -57,6 +58,8 @@ class ResearchConfig:
     gpu_default_memory_per_worker_mb: int = 4096
     gpu_allow_same_gpu_packing: bool = True
     gpu_packing_signal: str = "memory_only"
+    gpu_single_task_headroom_ratio: float = 0.10
+    gpu_single_task_headroom_mb: int = 2048
     resource_profiles: dict = field(default_factory=dict)
     role_agents: dict = field(default_factory=dict)
     agent_config: dict = field(default_factory=dict)
@@ -127,6 +130,10 @@ def load_config(research_dir: Path, *, strict: bool = False) -> ResearchConfig:
         scheduler_allow_backfill=bool(scheduler.get("allow_backfill", True)),
         scheduler_backfill_threshold_minutes=max(int(scheduler.get("backfill_threshold_minutes", 30) or 30), 1),
         scheduler_preemption=str(scheduler.get("preemption", "none") or "none"),
+        scheduler_single_gpu_qualification_timeout_minutes=max(
+            int(scheduler.get("single_gpu_qualification_timeout_minutes", 10) or 10),
+            1,
+        ),
         environment_text=str(raw.get("environment", "") or ""),
         bootstrap_auto_prepare=bool(bootstrap.get("auto_prepare", True)),
         bootstrap_working_dir=str(bootstrap.get("working_dir", ".") or "."),
@@ -141,6 +148,8 @@ def load_config(research_dir: Path, *, strict: bool = False) -> ResearchConfig:
         gpu_default_memory_per_worker_mb=max(int(gpu.get("default_memory_per_worker_mb", 4096) or 4096), 0),
         gpu_allow_same_gpu_packing=bool(gpu.get("allow_same_gpu_packing", True)),
         gpu_packing_signal=str(gpu.get("packing_signal", "memory_only") or "memory_only"),
+        gpu_single_task_headroom_ratio=max(float(gpu.get("single_task_headroom_ratio", 0.10) or 0.10), 0.0),
+        gpu_single_task_headroom_mb=max(int(gpu.get("single_task_headroom_mb", 2048) or 2048), 0),
         resource_profiles=resources.get("profiles", {}) if isinstance(resources.get("profiles", {}), dict) else {},
         role_agents=roles if isinstance(roles, dict) else {},
         agent_config=raw.get("agents", {}),

@@ -5,6 +5,7 @@ import json as json_mod
 import sys
 from pathlib import Path
 
+from filelock import FileLock
 from rich.console import Console
 from rich.table import Table
 
@@ -39,6 +40,66 @@ def load_results(repo_path: Path) -> list[dict]:
             return list(csv.DictReader(f, delimiter="\t"))
     except (OSError, UnicodeDecodeError):
         return []
+
+
+def _match_result_row(row: dict, *, result_id: str, trace: dict) -> bool:
+    secondary = _safe_json_object(row.get("secondary_metrics"))
+    if result_id and str(secondary.get("_open_researcher_result_id", "")).strip() == result_id:
+        return True
+    row_trace = _safe_json_object(secondary.get("_open_researcher_trace"))
+    if not trace:
+        return False
+    for key, expected in trace.items():
+        clean_expected = str(expected or "").strip()
+        if not clean_expected:
+            continue
+        if str(row_trace.get(key, "")).strip() != clean_expected:
+            return False
+    return any(str(value or "").strip() for value in trace.values())
+
+
+def augment_result_secondary_metrics(repo_path: Path, *, row: dict | None, patch: dict | None) -> bool:
+    """Merge additional secondary metrics into an existing results row."""
+    if not isinstance(patch, dict) or not patch:
+        return False
+    results_path = repo_path / ".research" / "results.tsv"
+    if not results_path.exists():
+        return False
+
+    row_hint = row if isinstance(row, dict) else {}
+    hint_secondary = _safe_json_object(row_hint.get("secondary_metrics"))
+    result_id = str(hint_secondary.get("_open_researcher_result_id", "")).strip()
+    trace = _safe_json_object(hint_secondary.get("_open_researcher_trace"))
+
+    lock = FileLock(str(results_path) + ".lock")
+    with lock:
+        try:
+            with results_path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                fieldnames = list(reader.fieldnames or [])
+                rows = list(reader)
+        except (OSError, UnicodeDecodeError):
+            return False
+        if not fieldnames or not rows:
+            return False
+
+        updated = False
+        for candidate in reversed(rows):
+            if not _match_result_row(candidate, result_id=result_id, trace=trace):
+                continue
+            secondary = _safe_json_object(candidate.get("secondary_metrics"))
+            secondary.update(patch)
+            candidate["secondary_metrics"] = json_mod.dumps(secondary, separators=(",", ":"))
+            updated = True
+            break
+        if not updated:
+            return False
+
+        with results_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(rows)
+    return True
 
 
 def derive_final_results(repo_path: Path) -> list[dict]:

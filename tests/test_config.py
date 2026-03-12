@@ -170,6 +170,39 @@ def test_load_config_graph_protocol_fields(research_dir):
     assert cfg.role_agents["critic_agent"] == "claude-code"
 
 
+def test_load_config_single_gpu_saturation_fields(research_dir):
+    config_data = {
+        "scheduler": {
+            "objective": "single_gpu_saturation",
+            "single_gpu_qualification_timeout_minutes": 15,
+        },
+        "gpu": {
+            "single_task_headroom_ratio": 0.12,
+            "single_task_headroom_mb": 3072,
+        },
+        "resources": {
+            "profiles": {
+                "single_gpu_large": {
+                    "gpu_count": 1,
+                    "gpu_mem_mb": 12000,
+                    "expected_memory_mb": 14000,
+                    "verification_level": "full",
+                }
+            }
+        },
+    }
+    config_path = research_dir / "config.yaml"
+    config_path.write_text(yaml.dump(config_data))
+
+    cfg = load_config(research_dir)
+
+    assert cfg.scheduler_objective == "single_gpu_saturation"
+    assert cfg.scheduler_single_gpu_qualification_timeout_minutes == 15
+    assert cfg.gpu_single_task_headroom_ratio == 0.12
+    assert cfg.gpu_single_task_headroom_mb == 3072
+    assert "single_gpu_large" in cfg.resource_profiles
+
+
 def test_load_config_legacy_protocol_aliases_normalize_to_research_v1(research_dir):
     config_path = research_dir / "config.yaml"
 

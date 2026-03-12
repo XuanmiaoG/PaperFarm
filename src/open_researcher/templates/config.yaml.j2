@@ -51,10 +51,11 @@ research:
   critic_repro_policy: best_or_surprising  # none | best_or_surprising | always
 
 scheduler:
-  objective: gain_per_resource_hour   # rank jobs by expected value / resource-time
+  objective: gain_per_resource_hour   # gain_per_resource_hour | single_gpu_saturation
   allow_backfill: true                # opportunistically run short shareable jobs
   backfill_threshold_minutes: 30      # jobs at or below this can backfill
   preemption: none                    # runtime never kills active jobs for higher-priority work
+  single_gpu_qualification_timeout_minutes: 10  # short probe budget before a full single-GPU saturation run
 
 memory:
   ideation: true           # research-v1: keep long-horizon ideation memory
@@ -78,6 +79,8 @@ gpu:
   default_memory_per_worker_mb: 4096  # default per-job GPU memory budget for packing
   allow_same_gpu_packing: true        # permit multiple jobs on one GPU if memory budget allows
   packing_signal: memory_only         # packing decision signal used by the scheduler
+  single_task_headroom_ratio: 0.10    # keep this fraction of VRAM free in single_gpu_saturation mode
+  single_task_headroom_mb: 2048       # never reserve less than this much headroom on one saturated GPU
 
 resources:
   profiles: {}                        # optional repo-declared launch/resource shapes for the scheduler
@@ -89,6 +92,8 @@ resources:
 #     single_gpu_amp:
 #       gpu_count: 1
 #       gpu_mem_mb: 12000
+#       expected_memory_mb: 14000
+#       verification_level: full       # qualification | full
 #       env:
 #         TORCH_COMPILE: "0"
 #     ddp_2gpu:

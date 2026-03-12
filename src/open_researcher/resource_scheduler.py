@@ -7,6 +7,10 @@ from typing import Any
 DEFAULT_EXPECTED_DURATION_MINUTES = 60
 DEFAULT_DURATION_MINUTES = DEFAULT_EXPECTED_DURATION_MINUTES
 DEFAULT_GPU_MEMORY_MB = 4096
+SINGLE_GPU_SATURATION_OBJECTIVE = "single_gpu_saturation"
+DEFAULT_SINGLE_GPU_HEADROOM_RATIO = 0.10
+DEFAULT_SINGLE_GPU_HEADROOM_MB = 2048
+DEFAULT_SINGLE_GPU_QUALIFICATION_TIMEOUT_MINUTES = 10
 
 
 def _safe_int(value: Any, default: int = 0, *, minimum: int = 0) -> int:
@@ -29,6 +33,14 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _safe_float(value: Any, default: float = 0.0, *, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+    return max(parsed, minimum)
+
+
 def normalize_execution_shape(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -42,6 +54,28 @@ def normalize_execution_shape(value: Any) -> dict[str, Any]:
         if isinstance(raw, (str, int, float, bool)):
             normalized[clean_key] = raw
     return normalized
+
+
+def _normalize_string_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, raw in value.items():
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            continue
+        clean_value = str(raw or "").strip()
+        if not clean_value:
+            continue
+        normalized[clean_key] = clean_value
+    return normalized
+
+
+def normalize_verification_level(value: Any) -> str:
+    level = str(value or "").strip().lower()
+    if level in {"qualification", "full"}:
+        return level
+    return "full"
 
 
 def _normalized_gpu_count(resource_request: dict[str, Any], gpu_hint: int | str | None) -> int | str:
@@ -87,12 +121,251 @@ def normalize_resource_request(
     }
 
 
+def normalize_resource_profiles(
+    value: Any,
+    *,
+    default_gpu_mem_mb: int = DEFAULT_GPU_MEMORY_MB,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_profile in value.items():
+        name = str(raw_name or "").strip()
+        if not name or not isinstance(raw_profile, dict):
+            continue
+        request_source = raw_profile.get("resource_request") if isinstance(raw_profile.get("resource_request"), dict) else raw_profile
+        request = normalize_resource_request(
+            request_source,
+            gpu_hint=raw_profile.get("gpu_count"),
+            default_gpu_mem_mb=default_gpu_mem_mb,
+        )
+        expected_memory_mb = _safe_int(
+            raw_profile.get("expected_memory_mb", request.get("gpu_mem_mb", 0)),
+            default=max(int(request.get("gpu_mem_mb", 0) or 0), 0),
+            minimum=0,
+        )
+        normalized[name] = {
+            "name": name,
+            "resource_request": request,
+            "execution_shape": normalize_execution_shape(raw_profile.get("execution_shape")),
+            "expected_duration_minutes": normalize_expected_duration_minutes(
+                raw_profile.get("expected_duration_minutes", raw_profile.get("duration_minutes"))
+            ),
+            "expected_memory_mb": expected_memory_mb,
+            "verification_level": normalize_verification_level(raw_profile.get("verification_level")),
+            "workload_label": normalize_workload_label(raw_profile.get("workload_label")),
+            "launcher": str(raw_profile.get("launcher", "") or "").strip(),
+            "env": _normalize_string_map(raw_profile.get("env")),
+            "source": f"config.resources.profiles.{name}",
+        }
+    return normalized
+
+
 def normalize_expected_duration_minutes(value: Any, *, default: int = DEFAULT_EXPECTED_DURATION_MINUTES) -> int:
     return _safe_int(value, default=default, minimum=1)
 
 
 def normalize_workload_label(value: Any) -> str:
     return str(value or "").strip()
+
+
+def is_single_gpu_saturation_objective(objective: Any) -> bool:
+    return str(objective or "").strip().lower() == SINGLE_GPU_SATURATION_OBJECTIVE
+
+
+def single_gpu_saturation_headroom_mb(
+    total_memory_mb: int,
+    *,
+    headroom_ratio: float = DEFAULT_SINGLE_GPU_HEADROOM_RATIO,
+    minimum_headroom_mb: int = DEFAULT_SINGLE_GPU_HEADROOM_MB,
+) -> int:
+    total = max(int(total_memory_mb or 0), 0)
+    minimum = max(int(minimum_headroom_mb or 0), 0)
+    ratio = _safe_float(headroom_ratio, default=DEFAULT_SINGLE_GPU_HEADROOM_RATIO, minimum=0.0)
+    if total <= 0:
+        return minimum
+    return max(minimum, int(total * ratio))
+
+
+def single_gpu_saturation_budget_mb(
+    *,
+    total_memory_mb: int,
+    free_memory_mb: int,
+    headroom_ratio: float = DEFAULT_SINGLE_GPU_HEADROOM_RATIO,
+    minimum_headroom_mb: int = DEFAULT_SINGLE_GPU_HEADROOM_MB,
+) -> tuple[int, int]:
+    headroom = single_gpu_saturation_headroom_mb(
+        total_memory_mb,
+        headroom_ratio=headroom_ratio,
+        minimum_headroom_mb=minimum_headroom_mb,
+    )
+    free = max(int(free_memory_mb or 0), 0)
+    return max(free - headroom, 0), headroom
+
+
+def enforce_single_gpu_saturation_request(
+    resource_request: dict[str, Any],
+    *,
+    default_gpu_mem_mb: int = DEFAULT_GPU_MEMORY_MB,
+) -> dict[str, Any]:
+    request = normalize_resource_request(
+        resource_request,
+        gpu_hint=1,
+        default_gpu_mem_mb=default_gpu_mem_mb,
+    )
+    request["gpu_count"] = 1
+    request["exclusive"] = True
+    request["shareable"] = False
+    if int(request.get("gpu_mem_mb", 0) or 0) <= 0:
+        request["gpu_mem_mb"] = max(int(default_gpu_mem_mb or 0), 0)
+    return request
+
+
+def build_implicit_resource_profile(
+    idea: dict[str, Any],
+    *,
+    default_gpu_mem_mb: int = DEFAULT_GPU_MEMORY_MB,
+) -> dict[str, Any]:
+    request = normalize_resource_request(
+        idea.get("resource_request"),
+        default_gpu_mem_mb=default_gpu_mem_mb,
+        fallback_gpu_hint=idea.get("gpu_hint", 1),
+    )
+    expected_memory_mb = _safe_int(
+        idea.get("expected_memory_mb", request.get("gpu_mem_mb", 0)),
+        default=max(int(request.get("gpu_mem_mb", 0) or 0), 0),
+        minimum=0,
+    )
+    return {
+        "name": str(idea.get("resource_profile", "") or "__idea_default__").strip() or "__idea_default__",
+        "resource_request": request,
+        "execution_shape": normalize_execution_shape(idea.get("execution_shape")),
+        "expected_duration_minutes": normalize_expected_duration_minutes(
+            idea.get("expected_duration_minutes"),
+            default=DEFAULT_DURATION_MINUTES,
+        ),
+        "expected_memory_mb": expected_memory_mb,
+        "verification_level": normalize_verification_level(idea.get("verification_level", "full")),
+        "workload_label": normalize_workload_label(idea.get("workload_label")),
+        "launcher": "",
+        "env": {},
+        "source": "idea",
+    }
+
+
+def candidate_single_gpu_saturation_profiles(
+    idea: dict[str, Any],
+    *,
+    resource_profiles: dict[str, Any] | None = None,
+    default_gpu_mem_mb: int = DEFAULT_GPU_MEMORY_MB,
+) -> list[dict[str, Any]]:
+    normalized_profiles = normalize_resource_profiles(resource_profiles or {}, default_gpu_mem_mb=default_gpu_mem_mb)
+    candidates: list[dict[str, Any]] = [build_implicit_resource_profile(idea, default_gpu_mem_mb=default_gpu_mem_mb)]
+    explicit_profile = str(idea.get("resource_profile", "") or "").strip()
+    workload_label = normalize_workload_label(idea.get("workload_label"))
+
+    if explicit_profile:
+        profile = normalized_profiles.get(explicit_profile)
+        if profile is not None:
+            candidates.append(profile)
+    else:
+        for profile in normalized_profiles.values():
+            profile_label = normalize_workload_label(profile.get("workload_label"))
+            if workload_label and profile_label and profile_label != workload_label:
+                continue
+            candidates.append(profile)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        name = str(candidate.get("name", "") or "").strip()
+        if not name or name in deduped:
+            continue
+        request = enforce_single_gpu_saturation_request(
+            candidate.get("resource_request", {}),
+            default_gpu_mem_mb=default_gpu_mem_mb,
+        )
+        gpu_count = resolve_gpu_count(request, gpu_available=True)
+        if gpu_count != 1:
+            continue
+        normalized = dict(candidate)
+        normalized["resource_request"] = request
+        normalized["expected_memory_mb"] = _safe_int(
+            candidate.get("expected_memory_mb", request.get("gpu_mem_mb", 0)),
+            default=max(int(request.get("gpu_mem_mb", 0) or 0), 0),
+            minimum=0,
+        )
+        deduped[name] = normalized
+
+    return sorted(
+        deduped.values(),
+        key=lambda item: (
+            int(item.get("expected_memory_mb", 0) or 0),
+            int(item.get("resource_request", {}).get("gpu_mem_mb", 0) or 0),
+            str(item.get("name", "")),
+        ),
+    )
+
+
+def select_single_gpu_saturation_profile(
+    idea: dict[str, Any],
+    *,
+    resource_profiles: dict[str, Any] | None = None,
+    gpu: dict[str, Any],
+    default_gpu_mem_mb: int = DEFAULT_GPU_MEMORY_MB,
+    headroom_ratio: float = DEFAULT_SINGLE_GPU_HEADROOM_RATIO,
+    minimum_headroom_mb: int = DEFAULT_SINGLE_GPU_HEADROOM_MB,
+) -> dict[str, Any]:
+    total_memory_mb = max(int(gpu.get("memory_total", 0) or 0), 0)
+    free_memory_mb = max(int(gpu.get("memory_free", 0) or 0), 0)
+    gpu_budget_mb, headroom_mb = single_gpu_saturation_budget_mb(
+        total_memory_mb=total_memory_mb,
+        free_memory_mb=free_memory_mb,
+        headroom_ratio=headroom_ratio,
+        minimum_headroom_mb=minimum_headroom_mb,
+    )
+    candidates = candidate_single_gpu_saturation_profiles(
+        idea,
+        resource_profiles=resource_profiles,
+        default_gpu_mem_mb=default_gpu_mem_mb,
+    )
+    feasible = [
+        item
+        for item in candidates
+        if int(item.get("resource_request", {}).get("gpu_mem_mb", 0) or 0) <= gpu_budget_mb
+    ]
+    selected = feasible[-1] if feasible else None
+    qualification_profiles = candidates[:]
+    full_profiles = [item for item in feasible if str(item.get("verification_level", "")).strip() != "qualification"]
+    if full_profiles:
+        selected = full_profiles[-1]
+    elif selected is None and candidates:
+        selected = candidates[0]
+    return {
+        "gpu_budget_mb": gpu_budget_mb,
+        "headroom_mb": headroom_mb,
+        "profiles": candidates,
+        "qualification_profiles": qualification_profiles,
+        "selected_profile": selected,
+        "supported": selected is not None and bool(feasible),
+    }
+
+
+def classify_single_gpu_saturation_status(
+    *,
+    gpu_budget_mb: int,
+    observed_peak_gpu_mem_mb: int | None = None,
+    expected_peak_gpu_mem_mb: int | None = None,
+) -> str:
+    budget = max(int(gpu_budget_mb or 0), 0)
+    if budget <= 0:
+        return "unsupported"
+    reference = observed_peak_gpu_mem_mb
+    if reference is None:
+        reference = expected_peak_gpu_mem_mb
+    if reference is None:
+        return "underfilled"
+    peak = max(int(reference or 0), 0)
+    return "saturated" if peak >= int(budget * 0.85) else "underfilled"
 
 
 def resolve_gpu_count(resource_request: dict[str, Any], *, gpu_available: bool) -> int:

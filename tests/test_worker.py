@@ -896,6 +896,146 @@ def test_worker_manager_finalizes_research_v1_idea_from_matching_result_row():
         assert state["result"] == {"metric_value": 1.25, "verdict": "kept"}
 
 
+def test_worker_manager_augments_result_row_with_single_gpu_saturation_metadata():
+    class FixedAllocator:
+        default_memory_per_worker_mb = 4096
+
+        def worker_slots(self, max_workers: int):
+            return [{"host": "local", "device": 0}]
+
+        def select_claimable_idea(self, pending_ideas: list[dict]) -> str | None:
+            return str(pending_ideas[0]["id"]) if pending_ideas else None
+
+        def allocate_for_idea(self, worker_id: str, idea: dict, preferred=None):
+            return GPUAllocation(
+                host="local",
+                device=0,
+                devices=[{"host": "local", "device": 0}],
+                reservations=[{"host": "local", "device": 0, "memory_mb": 4096}],
+                resource_request={"gpu_count": 1, "gpu_mem_mb": 4096, "exclusive": True, "shareable": False},
+                selected_profile={"name": "__idea_default__", "expected_memory_mb": 14000},
+                execution_shape={"batch_size": 8},
+                saturation_context={
+                    "gpu_budget_mb": 16000,
+                    "headroom_mb": 2048,
+                    "qualification_timeout_minutes": 10,
+                    "profiles": [{"name": "__idea_default__"}],
+                    "qualification_profiles": [{"name": "__idea_default__"}],
+                },
+                env={
+                    "CUDA_VISIBLE_DEVICES": "0",
+                    "OPEN_RESEARCHER_SINGLE_GPU_SATURATION": "1",
+                    "OPEN_RESEARCHER_AGENT_OWNS_SATURATION_SHAPE": "1",
+                    "OPEN_RESEARCHER_GPU_MEMORY_BUDGET_MB": "16000",
+                },
+            )
+
+        def release(self, allocation):
+            return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        results_path = research / "results.tsv"
+        results_path.write_text(
+            "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+        )
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "Saturate one GPU",
+                    "status": "pending",
+                    "priority": 1,
+                    "claimed_by": None,
+                    "assigned_experiment": None,
+                    "result": None,
+                    "source": "graph",
+                    "category": "graph",
+                    "gpu_hint": 1,
+                    "created_at": "2026-01-01T00:00:00",
+                    "protocol": "research-v1",
+                    "frontier_id": "frontier-001",
+                    "execution_id": "exec-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "execution_shape": {"batch_size": 8},
+                }
+            ],
+        )
+
+        def mock_agent_factory():
+            agent = MagicMock()
+
+            def run_side_effect(workdir, on_output=None, program_file="program.md", env=None, **kwargs):
+                selection_path = research / "runtime" / "idea-001__exec-001__saturation_selection.json"
+                selection_path.parent.mkdir(parents=True, exist_ok=True)
+                selection_path.write_text(
+                    json.dumps(
+                        {
+                            "selected_profile": "single_gpu_large",
+                            "qualification_attempts": 2,
+                            "expected_peak_gpu_mem_mb": 15000,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                secondary = json.dumps(
+                    {
+                        "_open_researcher_trace": {
+                            "frontier_id": env["OPEN_RESEARCHER_FRONTIER_ID"],
+                            "idea_id": env["OPEN_RESEARCHER_IDEA_ID"],
+                            "execution_id": env["OPEN_RESEARCHER_EXECUTION_ID"],
+                            "hypothesis_id": env["OPEN_RESEARCHER_HYPOTHESIS_ID"],
+                            "experiment_spec_id": env["OPEN_RESEARCHER_EXPERIMENT_SPEC_ID"],
+                        }
+                    }
+                )
+                with results_path.open("a", newline="") as handle:
+                    writer = csv.writer(handle, delimiter="\t")
+                    writer.writerow(
+                        [
+                            "2026-03-11T12:00:00Z",
+                            "abc1234",
+                            "mAP",
+                            "0.712300",
+                            secondary,
+                            "keep",
+                            "idea-001",
+                        ]
+                    )
+                return 0
+
+            agent.run.side_effect = run_side_effect
+            agent.terminate = MagicMock()
+            return agent
+
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=mock_agent_factory,
+            max_workers=1,
+            on_output=lambda line: None,
+            runtime_plugins=WorkerRuntimePlugins(gpu_allocator=FixedAllocator()),
+        )
+
+        wm.start()
+        wm.join(timeout=5)
+
+        rows = list(csv.DictReader(results_path.open(), delimiter="\t"))
+        assert len(rows) == 1
+        secondary = json.loads(rows[0]["secondary_metrics"])
+        resources = secondary["_open_researcher_resources"]
+        assert resources["selected_resource_profile"] == "single_gpu_large"
+        assert resources["qualification_attempts"] == 2
+        assert resources["saturation_status"] == "saturated"
+        state = next(item for item in idea_pool.all_ideas() if item["id"] == "idea-001")
+        assert state["resource_observation"]["selected_resource_profile"] == "single_gpu_large"
+
+
 def test_worker_manager_times_out_parallel_run_and_marks_item_skipped():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

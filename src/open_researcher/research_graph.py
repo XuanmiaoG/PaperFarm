@@ -580,6 +580,16 @@ class ResearchGraphStore:
                 normalized["gpu_mem_reserved_mb"] = max(int(value.get("gpu_mem_reserved_mb") or 0), 0)
             if "gpu_count_allocated" in value:
                 normalized["gpu_count_allocated"] = max(int(value.get("gpu_count_allocated") or 0), 0)
+            if "gpu_budget_mb" in value:
+                normalized["gpu_budget_mb"] = max(int(value.get("gpu_budget_mb") or 0), 0)
+            if "gpu_headroom_mb" in value:
+                normalized["gpu_headroom_mb"] = max(int(value.get("gpu_headroom_mb") or 0), 0)
+            if "observed_peak_gpu_mem_mb" in value:
+                normalized["observed_peak_gpu_mem_mb"] = max(int(value.get("observed_peak_gpu_mem_mb") or 0), 0)
+            if "expected_peak_gpu_mem_mb" in value:
+                normalized["expected_peak_gpu_mem_mb"] = max(int(value.get("expected_peak_gpu_mem_mb") or 0), 0)
+            if "qualification_attempts" in value:
+                normalized["qualification_attempts"] = max(int(value.get("qualification_attempts") or 0), 0)
         except (TypeError, ValueError):
             pass
         if isinstance(value.get("devices"), list):
@@ -604,6 +614,12 @@ class ResearchGraphStore:
             normalized["workload_label"] = str(value.get("workload_label", "")).strip()
         if "resource_profile" in value:
             normalized["resource_profile"] = str(value.get("resource_profile", "")).strip()
+        if "selected_resource_profile" in value:
+            normalized["selected_resource_profile"] = str(value.get("selected_resource_profile", "")).strip()
+        if "saturation_status" in value:
+            normalized["saturation_status"] = str(value.get("saturation_status", "")).strip()
+        if "single_gpu_saturation" in value:
+            normalized["single_gpu_saturation"] = bool(value.get("single_gpu_saturation"))
         return normalized
 
     def _normalize_anchor_role(self, value) -> str:

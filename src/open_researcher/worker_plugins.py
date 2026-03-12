@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from open_researcher.failure_memory import (
     MEMORY_POLICY,
@@ -14,9 +15,17 @@ from open_researcher.failure_memory import (
 )
 from open_researcher.gpu_manager import GPUManager
 from open_researcher.resource_scheduler import (
+    DEFAULT_SINGLE_GPU_HEADROOM_MB,
+    DEFAULT_SINGLE_GPU_HEADROOM_RATIO,
+    DEFAULT_SINGLE_GPU_QUALIFICATION_TIMEOUT_MINUTES,
+    candidate_single_gpu_saturation_profiles,
+    is_single_gpu_saturation_objective,
+    normalize_execution_shape,
+    normalize_resource_profiles,
     normalize_resource_request,
     resolve_gpu_count,
     resolve_gpu_mem_mb,
+    single_gpu_saturation_budget_mb,
     sort_pending_ideas,
 )
 from open_researcher.worktree import create_worktree, remove_worktree
@@ -37,6 +46,9 @@ class GPUAllocation:
     devices: list[dict] = field(default_factory=list)
     reservations: list[dict] = field(default_factory=list)
     resource_request: dict = field(default_factory=dict)
+    selected_profile: dict = field(default_factory=dict)
+    execution_shape: dict = field(default_factory=dict)
+    saturation_context: dict = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     log_lines: list[str] = field(default_factory=list)
 
@@ -50,14 +62,51 @@ class GPUAllocatorPlugin:
         *,
         default_memory_per_worker_mb: int = 4096,
         backfill_threshold_minutes: int = 30,
+        scheduler_objective: str = "",
+        resource_profiles: dict[str, Any] | None = None,
+        single_task_headroom_ratio: float = DEFAULT_SINGLE_GPU_HEADROOM_RATIO,
+        single_task_headroom_mb: int = DEFAULT_SINGLE_GPU_HEADROOM_MB,
+        single_gpu_qualification_timeout_minutes: int = DEFAULT_SINGLE_GPU_QUALIFICATION_TIMEOUT_MINUTES,
     ):
         self.manager = manager
         self.default_memory_per_worker_mb = max(int(default_memory_per_worker_mb or 0), 0)
         self.backfill_threshold_minutes = max(int(backfill_threshold_minutes or 0), 1)
+        self.scheduler_objective = str(scheduler_objective or "").strip()
+        self.single_gpu_saturation = is_single_gpu_saturation_objective(self.scheduler_objective)
+        self.resource_profiles = normalize_resource_profiles(
+            resource_profiles or {},
+            default_gpu_mem_mb=self.default_memory_per_worker_mb,
+        )
+        self.single_task_headroom_ratio = max(float(single_task_headroom_ratio or 0.0), 0.0)
+        self.single_task_headroom_mb = max(int(single_task_headroom_mb or 0), 0)
+        self.single_gpu_qualification_timeout_minutes = max(
+            int(single_gpu_qualification_timeout_minutes or DEFAULT_SINGLE_GPU_QUALIFICATION_TIMEOUT_MINUTES),
+            1,
+        )
 
     def worker_slots(self, max_workers: int) -> list[dict | None]:
         if max_workers <= 0:
             return []
+        if self.single_gpu_saturation:
+            try:
+                status = self.manager.refresh()
+            except Exception:
+                status = []
+            slots = []
+            for gpu in status if isinstance(status, list) else []:
+                reservations = gpu.get("reservations", [])
+                if reservations:
+                    continue
+                if self.manager.effective_free_mb(gpu) <= 0:
+                    continue
+                slots.append(
+                    {
+                        "host": gpu.get("host", "local"),
+                        "device": gpu.get("device", 0),
+                    }
+                )
+            if slots:
+                return slots[:max_workers]
         try:
             slots = self.manager.plan_slots(
                 max_workers=max_workers,
@@ -70,18 +119,134 @@ class GPUAllocatorPlugin:
         fallback = max(max_workers, 1)
         return [None] * max(fallback, 1)
 
+    def _status_rows(self) -> list[dict]:
+        try:
+            status = self.manager.refresh()
+        except Exception:
+            status = []
+        return status if isinstance(status, list) else []
+
+    @staticmethod
+    def _preferred_gpu(status: list[dict], preferred: dict | None) -> dict | None:
+        if not isinstance(preferred, dict):
+            return None
+        try:
+            preferred_device = int(preferred.get("device"))
+        except (TypeError, ValueError):
+            return None
+        preferred_host = str(preferred.get("host", "") or "").strip() or "local"
+        for gpu in status:
+            if str(gpu.get("host", "local") or "local").strip() != preferred_host:
+                continue
+            if int(gpu.get("device", -1) or -1) != preferred_device:
+                continue
+            return gpu
+        return None
+
+    def _single_gpu_saturation_plan(
+        self,
+        idea: dict,
+        *,
+        preferred: dict | None = None,
+        status: list[dict] | None = None,
+    ) -> dict[str, Any] | None:
+        rows = status if isinstance(status, list) else self._status_rows()
+        preferred_gpu = self._preferred_gpu(rows, preferred)
+        ordered_rows: list[dict] = []
+        if preferred_gpu is not None:
+            ordered_rows.append(preferred_gpu)
+        for gpu in rows:
+            if preferred_gpu is not None and gpu is preferred_gpu:
+                continue
+            ordered_rows.append(gpu)
+        for gpu in ordered_rows:
+            reservations = gpu.get("reservations", [])
+            if reservations:
+                continue
+            gpu_budget_mb, headroom_mb = single_gpu_saturation_budget_mb(
+                total_memory_mb=int(gpu.get("memory_total", 0) or 0),
+                free_memory_mb=int(gpu.get("memory_free", 0) or 0),
+                headroom_ratio=self.single_task_headroom_ratio,
+                minimum_headroom_mb=self.single_task_headroom_mb,
+            )
+            if gpu_budget_mb <= 0:
+                continue
+            candidate_profiles = candidate_single_gpu_saturation_profiles(
+                idea,
+                resource_profiles=self.resource_profiles,
+                default_gpu_mem_mb=self.default_memory_per_worker_mb,
+            )
+            default_profile = next(
+                (item for item in candidate_profiles if str(item.get("source", "")).strip() == "idea"),
+                candidate_profiles[0] if candidate_profiles else {},
+            )
+            explicit_profile_name = str(idea.get("resource_profile", "") or "").strip()
+            if explicit_profile_name:
+                default_profile = next(
+                    (item for item in candidate_profiles if str(item.get("name", "")).strip() == explicit_profile_name),
+                    default_profile,
+                )
+            execution_shape = normalize_execution_shape(
+                (default_profile or {}).get("execution_shape", idea.get("execution_shape"))
+            )
+            request = {
+                "gpu_count": 1,
+                "gpu_mem_mb": max(self.default_memory_per_worker_mb, 1),
+                "shareable": False,
+                "exclusive": True,
+            }
+            saturation_context = {
+                "objective": self.scheduler_objective,
+                "agent_autonomy": True,
+                "selected_profile": "",
+                "default_profile": str((default_profile or {}).get("name", "")).strip(),
+                "gpu_budget_mb": gpu_budget_mb,
+                "headroom_mb": headroom_mb,
+                "qualification_timeout_minutes": self.single_gpu_qualification_timeout_minutes,
+                "profiles": candidate_profiles,
+                "qualification_profiles": candidate_profiles,
+                "execution_shape": execution_shape,
+                "workload_label": str(idea.get("workload_label", "")).strip(),
+                "resource_profile": explicit_profile_name,
+                "device": {"host": str(gpu.get("host", "local") or "local"), "device": int(gpu.get("device", 0) or 0)},
+                "total_memory_mb": int(gpu.get("memory_total", 0) or 0),
+                "free_memory_mb": int(gpu.get("memory_free", 0) or 0),
+                "expected_memory_mb": int((default_profile or {}).get("expected_memory_mb", 0) or 0),
+            }
+            return {
+                "gpu": gpu,
+                "request": request,
+                "selected_profile": default_profile or {},
+                "execution_shape": execution_shape,
+                "saturation_context": saturation_context,
+            }
+        return None
+
     def describe_request(self, idea: dict) -> dict:
+        if self.single_gpu_saturation:
+            plan = self._single_gpu_saturation_plan(idea)
+            if plan is not None:
+                return dict(plan["request"])
+            request = normalize_resource_request(
+                idea.get("resource_request"),
+                default_gpu_mem_mb=self.default_memory_per_worker_mb,
+                fallback_gpu_hint=1,
+            )
+            request["gpu_count"] = 1
+            request["exclusive"] = True
+            request["shareable"] = False
+            request["gpu_mem_mb"] = resolve_gpu_mem_mb(
+                request,
+                default_gpu_mem_mb=self.default_memory_per_worker_mb,
+                gpu_count=1,
+            )
+            return request
         request = normalize_resource_request(
             idea.get("resource_request"),
             default_gpu_mem_mb=self.default_memory_per_worker_mb,
             fallback_gpu_hint=idea.get("gpu_hint"),
         )
-        try:
-            status = self.manager.refresh()
-        except Exception:
-            status = []
-        if not isinstance(status, list):
-            status = []
+        status = self._status_rows()
         gpu_count = resolve_gpu_count(request, gpu_available=bool(status))
         request = dict(request)
         request["gpu_count"] = gpu_count
@@ -129,13 +294,14 @@ class GPUAllocatorPlugin:
             default_gpu_mem_mb=self.default_memory_per_worker_mb,
             backfill_threshold_minutes=self.backfill_threshold_minutes,
         )
-        try:
-            status = self.manager.refresh()
-        except Exception:
-            status = []
-        if not isinstance(status, list):
-            status = []
+        status = self._status_rows()
         for idea in ordered:
+            if self.single_gpu_saturation:
+                if self._single_gpu_saturation_plan(idea, status=status) is not None:
+                    idea_id = str(idea.get("id", "")).strip()
+                    if idea_id:
+                        return idea_id
+                continue
             if self._request_fits(self.describe_request(idea), status):
                 idea_id = str(idea.get("id", "")).strip()
                 if idea_id:
@@ -143,20 +309,34 @@ class GPUAllocatorPlugin:
         return None
 
     def allocate_for_idea(self, worker_id: str, idea: dict, preferred: dict | None = None) -> GPUAllocation | None:
-        request = self.describe_request(idea)
+        plan = self._single_gpu_saturation_plan(idea, preferred=preferred) if self.single_gpu_saturation else None
+        request = dict(plan["request"]) if plan is not None else self.describe_request(idea)
         gpu_count = int(request.get("gpu_count", 0) or 0)
         if gpu_count <= 0:
             return GPUAllocation(resource_request=request)
+        selected_profile = dict(plan["selected_profile"]) if plan is not None else {}
+        execution_shape = dict(plan["execution_shape"]) if plan is not None else normalize_execution_shape(
+            idea.get("execution_shape")
+        )
+        saturation_context = dict(plan["saturation_context"]) if plan is not None else {}
         metadata = {
             "kind": "experiment",
             "task_kind": str(idea.get("workload_label", "")).strip(),
             "frontier_id": str(idea.get("frontier_id", "")).strip(),
             "execution_id": str(idea.get("execution_id", "")).strip(),
-            "resource_profile": str(idea.get("resource_profile", "")).strip(),
+            "resource_profile": str(
+                selected_profile.get("name", "") or idea.get("resource_profile", "")
+            ).strip(),
             "workload_label": str(idea.get("workload_label", "")).strip(),
         }
         try:
-            reservations = self.manager.reserve(worker_id, request, metadata=metadata, preferred=preferred)
+            reserve_preferred = preferred
+            if plan is not None:
+                reserve_preferred = {
+                    "host": plan["gpu"].get("host", "local"),
+                    "device": plan["gpu"].get("device", 0),
+                }
+            reservations = self.manager.reserve(worker_id, request, metadata=metadata, preferred=reserve_preferred)
         except Exception:
             logger.debug("GPU reservation failed", exc_info=True)
             return None
@@ -183,15 +363,41 @@ class GPUAllocatorPlugin:
             ],
             reservations=reservations,
             resource_request=request,
+            selected_profile=selected_profile,
+            execution_shape=execution_shape,
+            saturation_context=saturation_context,
             env={
                 "CUDA_VISIBLE_DEVICES": visible_devices,
-                "OPEN_RESEARCHER_GPU_MEMORY_BUDGET_MB": str(int(request.get("gpu_mem_mb", 0) or 0)),
+                "OPEN_RESEARCHER_GPU_MEMORY_BUDGET_MB": str(
+                    int(saturation_context.get("gpu_budget_mb", request.get("gpu_mem_mb", 0)) or 0)
+                ),
+                "OPEN_RESEARCHER_GPU_REQUESTED_MEMORY_MB": str(int(request.get("gpu_mem_mb", 0) or 0)),
                 "OPEN_RESEARCHER_GPU_COUNT": str(int(request.get("gpu_count", 0) or 0)),
+                "OPEN_RESEARCHER_RESOURCE_PROFILE": str(
+                    selected_profile.get("name", "") or idea.get("resource_profile", "")
+                ).strip(),
+                "OPEN_RESEARCHER_SELECTED_EXECUTION_SHAPE_JSON": json.dumps(execution_shape, separators=(",", ":")),
+                "OPEN_RESEARCHER_SINGLE_GPU_SATURATION": "1" if self.single_gpu_saturation else "",
+                "OPEN_RESEARCHER_AGENT_OWNS_SATURATION_SHAPE": "1" if self.single_gpu_saturation else "",
+                "OPEN_RESEARCHER_GPU_HEADROOM_MB": str(int(saturation_context.get("headroom_mb", 0) or 0)),
+                "OPEN_RESEARCHER_SINGLE_GPU_QUALIFICATION_TIMEOUT_MINUTES": str(
+                    int(saturation_context.get("qualification_timeout_minutes", 0) or 0)
+                ),
             },
             log_lines=[
                 f"[{worker_id}] Reserved {len(reservations)} GPU(s) on {visible_devices or 'cpu'} "
                 f"(budget {reserved_mb} MiB)"
-            ],
+            ]
+            + (
+                [
+                    f"[{worker_id}] Single-GPU saturation handed control to the agent "
+                    f"(default profile hint {str(selected_profile.get('name', '') or '__idea_default__').strip()}, "
+                    f"gpu budget {int(saturation_context.get('gpu_budget_mb', 0) or 0)} MiB, "
+                    f"headroom {int(saturation_context.get('headroom_mb', 0) or 0)} MiB)"
+                ]
+                if self.single_gpu_saturation
+                else []
+            ),
         )
 
     def release(self, allocation: GPUAllocation) -> None:

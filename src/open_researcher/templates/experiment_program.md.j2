@@ -120,6 +120,19 @@ Resource contract fields may also appear on the row:
 
 Treat those as execution hints from the manager/runtime. Use repo-supported knobs only; do not invent unsupported launchers or scaling schemes.
 
+If `OPEN_RESEARCHER_SINGLE_GPU_SATURATION=1` is present:
+
+- treat the assigned GPU as exclusive to this run
+- read `OPEN_RESEARCHER_SATURATION_CONTEXT_PATH` if present; it describes the candidate single-GPU shape ladder and the selected default profile
+- the runtime owns the budget and safety envelope; you own the concrete shape choice inside that envelope
+- choose any repo-supported resource shape that can increase single-GPU usage without changing the intended experiment semantics
+- treat names like batch / microbatch / workers / chunk / tile / launcher as examples, not an exhaustive allowlist
+- do **not** change semantic knobs such as learning rate, epochs, model structure, dataset subset, or loss weighting just to use more VRAM
+- before a long full run, do a short qualification pass when multiple candidate profiles are available: start from smaller shapes and choose the highest safe profile that fits the assigned GPU budget
+- if you complete qualification, write `.research/runtime/<idea>__<execution>__saturation_selection.json` with at least:
+  `{"selected_profile": "<name>", "qualification_attempts": <n>, "expected_peak_gpu_mem_mb": <int>}`
+- after qualification, run the real full evaluation using the selected profile
+
 ### 2d. Implement
 
 - Make the smallest code change that satisfies the selected experiment contract
@@ -133,6 +146,7 @@ Treat those as execution hints from the manager/runtime. Use repo-supported knob
 - If the selected row or linked spec contains a specific `evaluation_plan`, follow it as long as it is consistent with the repo and current evaluation file
 - Extract the primary metric value
 - Do not delete or overwrite `.research/eval_output.log` before recording. `record.py` will automatically persist scalar correctness and timing fields from that log.
+- In single-GPU saturation mode, qualification is not validation. Only the final full run should call `.research/scripts/record.py`.
 - If the selected run is expected to take long enough that Codex should hand control back to the runtime before the command finishes, you must use the supported launcher:
   `python .research/scripts/launch_detached.py -- <end-to-end command>`
 - Detached commands must be end-to-end: they are responsible for running train/eval and then calling `.research/scripts/record.py` before they exit.

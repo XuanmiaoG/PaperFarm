@@ -90,6 +90,11 @@ def build_parallel_worker_plugins(
             gpu_manager,
             default_memory_per_worker_mb=cfg.gpu_default_memory_per_worker_mb,
             backfill_threshold_minutes=cfg.scheduler_backfill_threshold_minutes,
+            scheduler_objective=cfg.scheduler_objective,
+            resource_profiles=cfg.resource_profiles,
+            single_task_headroom_ratio=cfg.gpu_single_task_headroom_ratio,
+            single_task_headroom_mb=cfg.gpu_single_task_headroom_mb,
+            single_gpu_qualification_timeout_minutes=cfg.scheduler_single_gpu_qualification_timeout_minutes,
         )
         if gpu_manager is not None
         else None,
@@ -118,6 +123,11 @@ def estimate_parallel_frontier_target(research_dir: Path, cfg: ResearchConfig) -
         manager,
         default_memory_per_worker_mb=cfg.gpu_default_memory_per_worker_mb,
         backfill_threshold_minutes=cfg.scheduler_backfill_threshold_minutes,
+        scheduler_objective=cfg.scheduler_objective,
+        resource_profiles=cfg.resource_profiles,
+        single_task_headroom_ratio=cfg.gpu_single_task_headroom_ratio,
+        single_task_headroom_mb=cfg.gpu_single_task_headroom_mb,
+        single_gpu_qualification_timeout_minutes=cfg.scheduler_single_gpu_qualification_timeout_minutes,
     )
     slot_budget = requested if requested_raw > 0 else max(manager.estimate_packable_slots(
         default_memory_mb=cfg.gpu_default_memory_per_worker_mb
