@@ -14,6 +14,7 @@ from filelock import FileLock
 from open_researcher.activity import ActivityMonitor
 from open_researcher.config import ResearchConfig
 from open_researcher.crash_counter import CrashCounter
+from open_researcher.evaluation_contract import ensure_evaluation_contract
 from open_researcher.git_identity import ensure_local_git_identity
 from open_researcher.git_safety import (
     GitWorkspaceError,
@@ -858,6 +859,31 @@ class ResearchLoop:
                 break
 
             after_manager = graph_store.read()
+            evaluation_contract = ensure_evaluation_contract(
+                self.research_dir,
+                self.cfg,
+                graph_payload=after_manager,
+            )
+            if evaluation_contract.get("primary_metric"):
+                self.cfg.primary_metric = str(evaluation_contract["primary_metric"])
+            if evaluation_contract.get("direction"):
+                self.cfg.direction = str(evaluation_contract["direction"])
+            if evaluation_contract.get("updated"):
+                updated_parts: list[str] = []
+                if evaluation_contract.get("updated_config"):
+                    updated_parts.append("config metrics")
+                if evaluation_contract.get("updated_evaluation"):
+                    updated_parts.append("evaluation.md")
+                self.emit(
+                    AgentOutput(
+                        phase="experimenting",
+                        detail=(
+                            "Evaluation contract backfill updated "
+                            + ", ".join(updated_parts)
+                            + " before critic preflight."
+                        ),
+                    )
+                )
             new_hypotheses = self._new_rows_by_id(before_manager, after_manager, "hypotheses")
             if new_hypotheses:
                 self.emit(

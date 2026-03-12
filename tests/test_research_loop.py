@@ -42,6 +42,29 @@ def _setup_repo(tmp_path: Path) -> tuple[Path, Path]:
     research = tmp_path / ".research"
     research.mkdir()
     (research / "experiment_program.md").write_text("# experiment")
+    (research / "evaluation.md").write_text(
+        "# Evaluation Design\n\n"
+        "> placeholder\n\n"
+        "## Primary Metric\n\n"
+        "- **Name:** <!-- e.g. accuracy -->\n"
+        "- **Direction:** <!-- higher_is_better | lower_is_better -->\n"
+        "- **Why this metric:** <!-- brief justification -->\n\n"
+        "## How to Measure\n\n"
+        "### Command\n\n"
+        "```bash\n"
+        "# Exact command to run evaluation\n"
+        "```\n\n"
+        "### Extracting the Metric\n\n"
+        "```bash\n"
+        "# How to extract the primary metric value from output\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    (research / "config.yaml").write_text(
+        "bootstrap:\n"
+        "  smoke_command: python smoke.py --dataset rsar\n",
+        encoding="utf-8",
+    )
     (research / "results.tsv").write_text(
         "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
     )
@@ -229,6 +252,103 @@ def test_run_graph_protocol_emits_preflight_rejection_trace(tmp_path):
     assert rejected_event.items
     assert rejected_event.items[0]["frontier_id"] == "frontier-001"
     assert rejected_event.items[0]["reason_code"] == "no_eval_plan"
+
+
+def test_run_graph_protocol_backfills_eval_contract_before_critic(tmp_path):
+    repo_path, research = _setup_repo(tmp_path)
+    (research / "manager_program.md").write_text("# manager")
+    (research / "critic_program.md").write_text("# critic")
+    graph_store = ResearchGraphStore(research / "research_graph.json")
+    graph_store.ensure_exists()
+
+    cfg = ResearchConfig(protocol="research-v1")
+    events = []
+
+    manager_agent = MagicMock()
+    critic_agent = MagicMock()
+    exp_agent = MagicMock()
+
+    def manager_run(workdir, on_output=None, program_file="program.md", **kwargs):
+        graph = graph_store.read()
+        if not graph["frontier"]:
+            graph["repo_profile"] = {
+                "profile_key": "iraod",
+                "task_family": "detector",
+                "primary_metric": "mAP",
+                "direction": "higher_is_better",
+                "source": "manager_cycle_1",
+                "resource_capabilities": {},
+            }
+            graph["hypotheses"] = [{"id": "hyp-001", "summary": "Anchor smoke"}]
+            graph["experiment_specs"] = [
+                {
+                    "id": "spec-001",
+                    "hypothesis_id": "hyp-001",
+                    "summary": "Run anchor smoke",
+                    "evaluation_plan": "Run smoke command once and read the newest result row.",
+                }
+            ]
+            graph["frontier"] = [
+                {
+                    "id": "frontier-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "description": "Run anchor smoke",
+                    "priority": 1,
+                    "status": "draft",
+                    "claim_state": "candidate",
+                }
+            ]
+            graph_store.path.write_text(json.dumps(graph, indent=2))
+        return 0
+
+    def critic_run(workdir, on_output=None, program_file="program.md", **kwargs):
+        eval_text = (research / "evaluation.md").read_text(encoding="utf-8")
+        config_text = (research / "config.yaml").read_text(encoding="utf-8")
+        assert "- **Name:** mAP" in eval_text
+        assert "python smoke.py --dataset rsar" in eval_text
+        assert ".research/results.tsv" in eval_text
+        assert "name: mAP" in config_text
+        assert "direction: higher_is_better" in config_text
+        graph = graph_store.read()
+        if graph["frontier"] and graph["frontier"][0]["status"] == "draft":
+            graph["frontier"][0]["status"] = "approved"
+            graph["frontier"][0]["review_reason_code"] = "approved_for_execution"
+            graph_store.path.write_text(json.dumps(graph, indent=2))
+            return 0
+        if graph["frontier"] and graph["frontier"][0]["status"] == "needs_post_review":
+            graph["frontier"][0]["status"] = "archived"
+            graph["frontier"][0]["claim_state"] = "promoted"
+            graph_store.path.write_text(json.dumps(graph, indent=2))
+        return 0
+
+    def exp_run(workdir, on_output=None, program_file="program.md", **kwargs):
+        pool_path = workdir / ".research" / "idea_pool.json"
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
+        for idea in pool["ideas"]:
+            if idea["status"] == "pending":
+                idea["status"] = "done"
+                idea["result"] = {"metric_value": 0.65, "verdict": "kept"}
+                idea["finished_at"] = "2026-03-13T00:00:00Z"
+        pool_path.write_text(json.dumps(pool, indent=2))
+        (workdir / ".research" / "results.tsv").write_text(
+            "timestamp\tcommit\tprimary_metric\tmetric_value\tsecondary_metrics\tstatus\tdescription\n"
+            "2026-03-13T00:00:00Z\tabc123\tmAP\t0.65\t{}\tkeep\tanchor smoke\n"
+        )
+        return 0
+
+    manager_agent.run.side_effect = manager_run
+    critic_agent.run.side_effect = critic_run
+    exp_agent.run.side_effect = exp_run
+
+    loop = ResearchLoop(repo_path, research, cfg, events.append)
+    exit_codes = loop.run_graph_protocol(manager_agent, critic_agent, exp_agent, max_experiments=1)
+
+    assert exit_codes == {"manager": 0, "critic": 0, "exp": 0}
+    assert any(
+        "Evaluation contract backfill updated" in getattr(event, "detail", "")
+        for event in events
+    )
 
 
 def test_run_graph_protocol_marks_bare_nonzero_experiment_as_failure(tmp_path):

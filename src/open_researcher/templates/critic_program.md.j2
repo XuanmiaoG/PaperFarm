@@ -104,7 +104,10 @@ Use `reason_code` on claim updates:
 For each `draft` frontier row:
 
 1. Check that the linked experiment spec tests **one causal claim**.
-2. Check that the result can be measured with the current evaluation plan.
+2. Check that the result can be measured with the current evaluation contract.
+   Treat the contract as satisfied when either:
+   - `.research/evaluation.md` contains a runnable measurement command and metric extraction, or
+   - the linked spec has a concrete `evaluation_plan` and the repo/config already defines the primary metric + direction.
 3. Check for confounds:
    - missing or vague evaluation command
    - too many simultaneous changes
@@ -118,6 +121,7 @@ For each `draft` frontier row:
    - write a precise `review_reason`
 
 Reject broad, multi-axis, or unmeasurable specs.
+Do not reject a preflight row just because `results.tsv` is still empty; preflight happens before execution.
 
 ## Post-Run Review
 
