@@ -72,6 +72,7 @@ def test_demo_cli_help():
         [sys.executable, "-m", "open_researcher.cli", "--help"],
         capture_output=True,
         text=True,
+        env={**__import__("os").environ, "NO_COLOR": "1"},
     )
     assert "demo" in result.stdout
 
@@ -82,6 +83,7 @@ def test_demo_cli_serve_option():
         [sys.executable, "-m", "open_researcher.cli", "demo", "--help"],
         capture_output=True,
         text=True,
+        env={**__import__("os").environ, "NO_COLOR": "1"},
     )
     assert "--serve" in result.stdout
     assert "--port" in result.stdout
