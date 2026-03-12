@@ -140,6 +140,7 @@ def test_experiment_program_serial_mode():
     assert "execute exactly one frontier item" in result
     assert "execution_id" in result
     assert "frontier_id" in result
+    assert "Never stage runtime state" in result
 
 
 def test_init_creates_experiment_progress(init_dir):
@@ -178,6 +179,7 @@ def test_init_excludes_research_from_git(init_dir):
     if not exclude_path.is_absolute():
         exclude_path = (repo / exclude_path).resolve()
     contents = (exclude_path / "info" / "exclude").read_text()
+    assert "/.research" in contents
     assert "/.research/" in contents
 
 

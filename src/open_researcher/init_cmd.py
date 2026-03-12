@@ -131,7 +131,7 @@ def do_init(repo_path: Path, tag: str | None = None) -> None:
 
     # .research is runtime state; keep it out of git history so parallel
     # worktrees can safely replace the directory with a shared symlink.
-    _ensure_git_exclude_patterns(repo_path, ["/.research/"])
+    _ensure_git_exclude_patterns(repo_path, ["/.research", "/.research/"])
 
     print(f"[OK] Initialized .research/ with tag '{tag}'")
     print(f"     Branch: research/{tag}")

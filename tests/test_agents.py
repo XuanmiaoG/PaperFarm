@@ -77,7 +77,40 @@ def test_codex_build_command():
         f.write("test prompt")
         f.flush()
         cmd = agent.build_command(Path(f.name), Path("/tmp/work"))
-    assert cmd[0] == "codex"
+    assert cmd == ["codex", "exec", "-m", "gpt-5.3-codex", "--sandbox", "workspace-write", "-"]
+
+
+def test_codex_build_command_supports_full_auto_alias():
+    from open_researcher.agents.codex import CodexAdapter
+
+    agent = CodexAdapter(config={"sandbox": "full-auto", "extra_flags": ["--skip-git-repo-check"]})
+    cmd = agent.build_command(Path("/tmp/program.md"), Path("/tmp/work"))
+    assert cmd == [
+        "codex",
+        "exec",
+        "-m",
+        "gpt-5.3-codex",
+        "--full-auto",
+        "--skip-git-repo-check",
+        "-",
+    ]
+
+
+def test_codex_build_command_adds_external_shared_research_dir(tmp_path):
+    from open_researcher.agents.codex import CodexAdapter
+
+    shared_research = tmp_path / "shared-research"
+    shared_research.mkdir()
+    workdir = tmp_path / "worker"
+    workdir.mkdir()
+    (workdir / ".research").symlink_to(shared_research, target_is_directory=True)
+
+    agent = CodexAdapter()
+    cmd = agent.build_command(shared_research / "program.md", workdir)
+
+    assert "--add-dir" in cmd
+    add_dir_idx = cmd.index("--add-dir")
+    assert cmd[add_dir_idx + 1] == str(shared_research.resolve())
 
 
 def test_aider_build_command():
@@ -244,12 +277,13 @@ def test_claude_code_config_extra_flags():
 def test_codex_config_custom_model():
     from open_researcher.agents.codex import CodexAdapter
 
-    agent = CodexAdapter(config={"model": "gpt-5.2", "sandbox": "suggest"})
+    agent = CodexAdapter(config={"model": "gpt-5.2", "sandbox": "danger-full-access"})
     cmd = agent.build_command(Path("/tmp/program.md"), Path("/tmp/work"))
     assert "-m" in cmd
     idx = cmd.index("-m")
     assert cmd[idx + 1] == "gpt-5.2"
-    assert "--suggest" in cmd
+    assert "--sandbox" in cmd
+    assert "danger-full-access" in cmd
 
 
 def test_codex_default_model():
@@ -258,7 +292,8 @@ def test_codex_default_model():
     agent = CodexAdapter()
     cmd = agent.build_command(Path("/tmp/program.md"), Path("/tmp/work"))
     assert "gpt-5.3-codex" in cmd
-    assert "--full-auto" in cmd
+    assert "--sandbox" in cmd
+    assert "workspace-write" in cmd
 
 
 def test_aider_config_model():

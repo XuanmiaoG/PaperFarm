@@ -19,6 +19,7 @@ from open_researcher.git_safety import (
     ensure_clean_workspace,
     rollback_workspace,
 )
+from open_researcher.git_identity import ensure_local_git_identity
 from open_researcher.phase_gate import PhaseGate
 from open_researcher.research_events import (
     AgentOutput,
@@ -722,6 +723,7 @@ class ResearchLoop:
         activity_monitor = ActivityMonitor(self.research_dir)
         graph_store.ensure_exists()
         memory_store.ensure_exists()
+        ensure_local_git_identity(self.repo_path)
 
         exit_codes: dict[str, int] = {}
         experiments_completed = 0

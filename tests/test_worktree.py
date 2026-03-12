@@ -83,6 +83,39 @@ def test_create_and_remove_worktree():
         assert not wt_path.exists()
 
 
+def test_worktree_applies_tracked_overlay_and_ignored_source_file():
+    """Worktree should reflect the current source tree, not only committed HEAD."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_git_repo(repo)
+        _setup_research(repo)
+
+        (repo / "hello.py").write_text("print('dirty tracked change')\n")
+        overlay = repo / "local_overlay.py"
+        overlay.write_text("VALUE = 'overlay'\n")
+
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        exclude_path = Path(git_dir)
+        if not exclude_path.is_absolute():
+            exclude_path = (repo / exclude_path).resolve()
+        info_exclude = exclude_path / "info" / "exclude"
+        info_exclude.parent.mkdir(parents=True, exist_ok=True)
+        info_exclude.write_text("/local_overlay.py\n", encoding="utf-8")
+
+        wt_path = create_worktree(repo, "overlay-test")
+
+        assert (wt_path / "hello.py").read_text() == "print('dirty tracked change')\n"
+        assert (wt_path / "local_overlay.py").read_text() == "VALUE = 'overlay'\n"
+
+        remove_worktree(repo, wt_path)
+
+
 def test_worktree_shares_idea_pool():
     """IdeaPool updates in the worktree hit the canonical shared state."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -163,6 +196,37 @@ def test_worktree_stale_cleanup():
         assert (wt2 / "hello.py").read_text() == "print('hello')\n"
 
         remove_worktree(repo, wt2)
+
+
+def test_worktree_excludes_shared_research_symlink_from_git_status():
+    """The shared .research symlink must stay ignored inside worker worktrees."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_git_repo(repo)
+        _setup_research(repo)
+
+        wt_path = create_worktree(repo, "exclude-test")
+
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert ".research" not in status
+
+        subprocess.run(["git", "add", "-A"], cwd=str(wt_path), capture_output=True, check=True)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert ".research" not in staged
+
+        remove_worktree(repo, wt_path)
 
 
 def test_create_worktree_removes_stale_branch_without_directory():

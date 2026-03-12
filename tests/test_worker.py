@@ -639,10 +639,16 @@ def test_worker_manager_requeues_research_v1_run_without_result():
                 }
             ],
         )
+        run_calls = []
 
         def mock_agent_factory():
             agent = MagicMock()
-            agent.run.return_value = 0
+
+            def run_side_effect(*args, **kwargs):
+                run_calls.append("run")
+                return 0
+
+            agent.run.side_effect = run_side_effect
             agent.terminate = MagicMock()
             return agent
 
@@ -654,7 +660,7 @@ def test_worker_manager_requeues_research_v1_run_without_result():
             idea_pool=idea_pool,
             agent_factory=mock_agent_factory,
             max_workers=1,
-            max_claims=1,
+            max_claims=3,
             on_output=output_lines.append,
         )
 
@@ -664,6 +670,7 @@ def test_worker_manager_requeues_research_v1_run_without_result():
         summary = idea_pool.summary()
         assert summary["pending"] == 1
         assert summary["done"] == 0
+        assert run_calls == ["run"]
         assert any("released claim back to pending" in line for line in output_lines)
 
 

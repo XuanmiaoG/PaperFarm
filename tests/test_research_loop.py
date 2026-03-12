@@ -616,3 +616,52 @@ def test_run_graph_protocol_bootstraps_parallel_baseline_before_worker_batch(tmp
     assert exit_codes == {"manager": 0, "critic": 0, "exp": 0}
     assert parallel_calls == ["experimenting"]
     assert exp_agent.run.call_count == 1
+
+
+def test_run_graph_protocol_restores_local_git_identity_from_latest_commit(tmp_path):
+    repo_path, research = _setup_repo(tmp_path)
+    (research / "manager_program.md").write_text("# manager")
+    (research / "critic_program.md").write_text("# critic")
+
+    subprocess.run(
+        ["git", "config", "--local", "--unset", "user.email"],
+        cwd=str(repo_path),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--local", "--unset", "user.name"],
+        cwd=str(repo_path),
+        capture_output=True,
+        check=True,
+    )
+
+    manager_agent = MagicMock()
+    critic_agent = MagicMock()
+    exp_agent = MagicMock()
+
+    manager_agent.run.return_value = 0
+    critic_agent.run.return_value = 0
+    exp_agent.run.return_value = 0
+
+    cfg = ResearchConfig(protocol="research-v1", primary_metric="accuracy", direction="higher_is_better")
+    loop = ResearchLoop(repo_path, research, cfg, lambda event: None)
+    exit_codes = loop.run_graph_protocol(manager_agent, critic_agent, exp_agent, max_experiments=0)
+
+    assert exit_codes == {"manager": 0}
+    name = subprocess.run(
+        ["git", "config", "--local", "--get", "user.name"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    email = subprocess.run(
+        ["git", "config", "--local", "--get", "user.email"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert name == "Test"
+    assert email == "test@test.com"

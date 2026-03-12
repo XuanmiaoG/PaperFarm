@@ -232,7 +232,7 @@ agents:
     extra_flags: ["--max-turns", "50"]
   codex:
     model: "gpt-5.2"                      # override default
-    sandbox: "suggest"                     # full-auto | suggest | ask
+    sandbox: "workspace-write"            # workspace-write | read-only | danger-full-access | full-auto
   aider:
     model: "gpt-4o"
     extra_flags: ["--no-git"]

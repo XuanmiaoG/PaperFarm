@@ -261,6 +261,7 @@ class WorkerManager:
                 workspace_snapshot = None
                 run_code = 1
                 notify_finished = True
+                stop_after_finalize = False
                 try:
                     if not self._wait_until_unpaused():
                         applied = self.idea_pool.update_status(idea["id"], "pending", claim_token=claim_token or None)
@@ -413,6 +414,9 @@ class WorkerManager:
                                     )
                                 if timed_out:
                                     run_code = 124
+                                else:
+                                    run_code = 1
+                                stop_after_finalize = True
                         else:
                             applied = self.idea_pool.mark_done(
                                 idea["id"],
@@ -464,9 +468,9 @@ class WorkerManager:
                     self.on_output(f"[{wid}] Error: {exc}")
                     applied = self.idea_pool.update_status(idea["id"], "skipped", claim_token=claim_token or None)
                     if not applied:
-                        self.on_output(
-                            f"[{wid}] Claim race detected for {idea['id']}; error skip suppressed, cleanup applied"
-                        )
+                            self.on_output(
+                                f"[{wid}] Claim race detected for {idea['id']}; error skip suppressed, cleanup applied"
+                            )
                     run_code = 1
                 finally:
                     try:
@@ -489,6 +493,8 @@ class WorkerManager:
                     )
                     latest_idea["exit_code"] = run_code
                     latest_idea["worker_id"] = wid
+                    if stop_after_finalize:
+                        latest_idea["retry_requested"] = True
                     if notify_finished and self._on_experiment_finished is not None:
                         try:
                             should_stop = bool(self._on_experiment_finished(latest_idea))
@@ -497,6 +503,8 @@ class WorkerManager:
                             should_stop = False
                         if should_stop:
                             self.stop()
+                    if stop_after_finalize:
+                        self.stop()
         except Exception as exc:
             self._record_fatal_error()
             self.on_output(f"[{wid}] Fatal worker error: {exc}")
