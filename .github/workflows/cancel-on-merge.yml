@@ -1,0 +1,45 @@
+name: Cancel PR workflows on merge
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel in-progress and queued CI runs for merged PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const headRepo = context.payload.pull_request.head.repo.full_name;
+
+            for (const status of ['in_progress', 'queued']) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch,
+                status,
+              });
+              for (const run of runs.workflow_runs) {
+                // Skip our own run
+                if (run.id === context.runId) continue;
+                // Only cancel runs from the same head repo (avoid fork name collisions)
+                if (run.head_repository?.full_name !== headRepo) continue;
+                // Only cancel PR-triggered runs
+                if (run.event !== 'pull_request') continue;
+
+                console.log(`Cancelling ${status} run ${run.id} (${run.name})`);
+                await github.rest.actions.cancelWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                });
+              }
+            }

@@ -216,3 +216,4 @@ jobs:
 
       - name: Smoke CLI entrypoint
         run: open-researcher --help > /dev/null
+
