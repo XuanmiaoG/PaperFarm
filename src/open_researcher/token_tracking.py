@@ -87,3 +87,50 @@ class TokenLedger:
             # Restore int keys from the string-keyed JSON representation
             per_experiment={int(k): TokenMetrics.from_dict(v) for k, v in d.get("per_experiment", {}).items()},
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 2: BudgetCheckResult and cost estimation
+# ---------------------------------------------------------------------------
+
+MODEL_RATES: dict[str, dict[str, float]] = {
+    "claude-sonnet-4-5-20250514": {"input": 3.0, "output": 15.0},
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
+    "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.0},
+    "default": {"input": 3.0, "output": 15.0},
+}
+
+
+@dataclass
+class BudgetCheckResult:
+    """Result of a budget threshold check."""
+
+    action: str   # "warn" | "pause" | "stop"
+    reason: str   # "threshold" | "exceeded"
+    ratio: float  # current_cost / budget_limit
+
+
+def estimate_cost(metrics: TokenMetrics, model: str = "") -> float:
+    """Return the estimated USD cost for *metrics* given the model's pricing.
+
+    Falls back to the "default" rate for unknown model names.
+    """
+    rates = MODEL_RATES.get(model, MODEL_RATES["default"])
+    input_cost = (metrics.tokens_input / 1_000_000) * rates["input"]
+    output_cost = (metrics.tokens_output / 1_000_000) * rates["output"]
+    return input_cost + output_cost
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate the number of tokens in *text*.
+
+    Uses tiktoken when available; falls back to a simple heuristic (len // 4).
+    """
+    try:
+        import tiktoken  # type: ignore[import]
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except ImportError:
+        return max(1, len(text) // 4)
