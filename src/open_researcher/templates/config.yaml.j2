@@ -37,10 +37,10 @@ bootstrap:
   auto_prepare: true         # run install/data/smoke automatically before review/runtime
   working_dir: "."           # relative to repo root
   python: ""                 # optional explicit Python executable
-  install_command: ""        # optional explicit dependency install command
-  data_command: ""           # optional explicit dataset/setup command
-  smoke_command: ""          # optional explicit readiness smoke/eval command
-  expected_paths: []         # files/dirs expected after data/setup, relative to repo root
+  install_command: ""        # only if a fresh workspace truly needs an explicit install step
+  data_command: ""           # only if data/setup must be materialized automatically
+  smoke_command: ""          # short readiness probe; should prove the repo can run now
+  expected_paths: []         # concrete artifacts expected from setup; smoke success remains authoritative
   requires_gpu: false        # fail prepare if no GPU is present
 
 research:
@@ -49,12 +49,6 @@ research:
   protocol: research-v1     # normalized at load time; older protocol names auto-upgrade
   manager_batch_size: 3     # frontier batch size for research-v1 manager
   critic_repro_policy: best_or_surprising  # none | best_or_surprising | always
-
-scheduler:
-  objective: gain_per_resource_hour   # generic scheduler objective across GPU/CPU jobs
-  allow_backfill: true                # allow short shareable jobs to fill idle capacity
-  backfill_threshold_minutes: 30      # jobs at or below this runtime may backfill
-  preemption: none                    # non-preemptive scheduling; running jobs are never killed
 
 scheduler:
   objective: gain_per_resource_hour   # rank jobs by expected value / resource-time
@@ -87,9 +81,6 @@ gpu:
 
 resources:
   profiles: {}                        # optional repo-declared launch/resource shapes for the scheduler
-  default_memory_per_worker_mb: 4096  # default single-job GPU memory budget
-  allow_same_gpu_packing: true        # permit multiple jobs per physical GPU
-  packing_signal: memory_only         # use free/reserved memory, not utilization
 
 # Optional repo-declared execution/resource profiles.
 # These let the manager choose among shapes the repo already exposes.

@@ -102,7 +102,6 @@ def test_run_bootstrap_prepare_fails_when_expected_paths_missing_without_data_st
     research.mkdir()
     cfg = ResearchConfig(
         bootstrap_auto_prepare=True,
-        bootstrap_smoke_command=_py_inline("print('smoke only')"),
         bootstrap_expected_paths=["data/missing.txt"],
     )
 
@@ -114,6 +113,42 @@ def test_run_bootstrap_prepare_fails_when_expected_paths_missing_without_data_st
     assert code == 1
     assert state["status"] == "failed"
     assert any("Expected paths are missing" in item for item in state["errors"])
+
+
+def test_run_bootstrap_prepare_reuses_ready_workspace_before_install_and_data(tmp_path: Path) -> None:
+    research = tmp_path / ".research"
+    research.mkdir()
+    cfg = ResearchConfig(
+        bootstrap_auto_prepare=True,
+        bootstrap_install_command=_py_inline("raise SystemExit(9)"),
+        bootstrap_data_command=_py_inline("raise SystemExit(8)"),
+        bootstrap_smoke_command=_py_inline("print('ready already')"),
+        bootstrap_expected_paths=["data/not-there.txt"],
+    )
+
+    plan = resolve_bootstrap_plan(tmp_path, research, cfg)
+    assert plan["status"] == "resolved"
+    assert plan["warnings"] == []
+    assert plan["unresolved"] == []
+
+    code, state = run_bootstrap_prepare(tmp_path, research, cfg)
+
+    assert code == 0
+    assert state["status"] == "completed"
+    assert state["install"]["status"] == "skipped"
+    assert state["data"]["status"] == "skipped"
+    assert state["smoke"]["status"] == "completed"
+    assert any("smoke succeeded" in item.lower() or "smoke passed" in item.lower() for item in state["warnings"])
+    persisted = read_bootstrap_state(research / "bootstrap_state.json")
+    assert persisted["status"] == "completed"
+    assert persisted["install"]["status"] == "skipped"
+    assert persisted["data"]["status"] == "skipped"
+    assert persisted["smoke"]["status"] == "completed"
+    assert any("smoke" in item.lower() for item in persisted["warnings"])
+    prepare_log = (research / "prepare.log").read_text(encoding="utf-8")
+    assert "smoke_preflight" in prepare_log
+    assert "install ==" not in prepare_log
+    assert "data ==" not in prepare_log
 
 
 def test_format_bootstrap_dry_run_surfaces_expected_paths_and_unresolved(tmp_path: Path) -> None:

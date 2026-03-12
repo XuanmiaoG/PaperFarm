@@ -80,10 +80,10 @@ Update status: `{"status": "strategizing", "detail": "defining research strategy
 3. Estimate reasonable experiment duration
 4. Determine how this repo should be prepared before experiments:
    - `bootstrap.working_dir`
-   - `bootstrap.install_command`
-   - `bootstrap.data_command` if dataset/setup is needed
-   - `bootstrap.smoke_command` for a fast readiness check
-   - `bootstrap.expected_paths` if data/setup should materialize specific files
+   - `bootstrap.install_command` only if a fresh workspace really needs an explicit install step
+   - `bootstrap.data_command` only if dataset/setup must be materialized automatically
+   - `bootstrap.smoke_command` for a short readiness check that proves the workspace can actually run
+   - `bootstrap.expected_paths` only for concrete setup artifacts that smoke alone would not validate
    - `bootstrap.requires_gpu` if the repo is GPU-only
 5. Write to `.research/evaluation.md`
 6. Update `.research/config.yaml`: set `metrics.primary.*` and `bootstrap.*`
@@ -97,6 +97,9 @@ Update status: `{"status": "strategizing", "detail": "defining research strategy
 - Do NOT generate specific experiment ideas — that is the Research Manager's job
 - Do NOT modify code or run experiments
 - Bootstrap commands should be concrete and executable; prefer short local commands over prose
+- Do not add install/data commands just because they exist in docs; only include them when they are necessary for this workspace to become runnable
+- Prefer reusing an already provisioned environment or dataset over reinstalling or redownloading
+- `bootstrap.smoke_command` must be a readiness probe, not a full benchmark, long training run, or broad environment rebuild
 - Always update `activity.json` before each action
 - Keep all outputs specific and actionable
 - If web search is unavailable, rely on codebase analysis alone

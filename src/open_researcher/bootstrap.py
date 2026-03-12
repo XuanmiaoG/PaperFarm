@@ -49,6 +49,7 @@ def default_bootstrap_state(research_dir: Path) -> dict:
         "data": _default_step(log_path=log_path),
         "smoke": _default_step(log_path=log_path),
         "errors": [],
+        "warnings": [],
         "unresolved": [],
         "updated_at": "",
     }
@@ -83,6 +84,8 @@ def read_bootstrap_state(path: Path) -> dict:
         merged["expected_paths"] = [str(item) for item in payload["expected_paths"]]
     if isinstance(payload.get("errors"), list):
         merged["errors"] = [str(item) for item in payload["errors"]]
+    if isinstance(payload.get("warnings"), list):
+        merged["warnings"] = [str(item) for item in payload["warnings"]]
     if isinstance(payload.get("unresolved"), list):
         merged["unresolved"] = [str(item) for item in payload["unresolved"]]
     return merged
@@ -251,6 +254,15 @@ def _expected_paths_status(repo_path: Path, expected_paths: list[str]) -> list[d
     return items
 
 
+def _append_warning(state: dict, detail: str) -> None:
+    message = str(detail or "").strip()
+    if not message:
+        return
+    warnings = state.setdefault("warnings", [])
+    if message not in warnings:
+        warnings.append(message)
+
+
 def resolve_bootstrap_plan(repo_path: Path, research_dir: Path, cfg: ResearchConfig) -> dict:
     state = read_bootstrap_state(research_dir / "bootstrap_state.json")
     repo_profile = detect_repo_profile(repo_path)
@@ -265,6 +277,7 @@ def resolve_bootstrap_plan(repo_path: Path, research_dir: Path, cfg: ResearchCon
     missing_expected_paths = [item["path"] for item in expected_paths_state if not item.get("exists")]
 
     errors: list[str] = []
+    warnings: list[str] = []
     unresolved: list[str] = []
     if not working_dir.exists():
         errors.append(f"Working directory does not exist: {working_dir_value}")
@@ -275,9 +288,11 @@ def resolve_bootstrap_plan(repo_path: Path, research_dir: Path, cfg: ResearchCon
     if not smoke_command:
         unresolved.append("Smoke command is unresolved. Fill bootstrap.smoke_command or evaluation.md.")
     if missing_expected_paths and not data_command:
-        unresolved.append(
-            "Expected paths are missing but no data command was resolved: " + ", ".join(missing_expected_paths)
-        )
+        detail = "Expected paths are missing but no data command was resolved: " + ", ".join(missing_expected_paths)
+        if smoke_command:
+            warnings.append(detail + ". A successful smoke check will be treated as authoritative readiness.")
+        else:
+            unresolved.append(detail)
     if cfg.bootstrap_requires_gpu and not shutil.which("nvidia-smi"):
         errors.append("bootstrap.requires_gpu=true but nvidia-smi is not available.")
 
@@ -294,6 +309,7 @@ def resolve_bootstrap_plan(repo_path: Path, research_dir: Path, cfg: ResearchCon
             "requires_gpu": bool(cfg.bootstrap_requires_gpu),
             "expected_path_status": expected_paths_state,
             "errors": errors,
+            "warnings": warnings,
             "unresolved": unresolved,
         }
     )
@@ -339,12 +355,6 @@ def _step_names() -> tuple[str, ...]:
 def is_prepare_ready(state: dict, repo_path: Path) -> bool:
     if str(state.get("status", "")).strip() != "completed":
         return False
-    expected = state.get("expected_paths", [])
-    if isinstance(expected, list):
-        for raw in expected:
-            value = str(raw).strip()
-            if value and not (repo_path / value).exists():
-                return False
     return str(state.get("smoke", {}).get("status", "")).strip() == "completed"
 
 
@@ -382,6 +392,101 @@ def _append_prepare_log(log_path: Path, step: str, command: str, result: subproc
             if not result.stderr.endswith("\n"):
                 handle.write("\n")
         handle.write(f"[exit_code={result.returncode}]\n")
+
+
+def _run_prepare_command(
+    step_name: str,
+    command: str,
+    *,
+    working_dir: Path,
+    env: dict[str, str],
+    log_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=str(working_dir),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    _append_prepare_log(log_path, step_name, command, result)
+    return result
+
+
+def _try_smoke_preflight(
+    repo_path: Path,
+    state: dict,
+    *,
+    working_dir: Path,
+    env: dict[str, str],
+    log_path: Path,
+    state_path: Path,
+    on_prepare_event=None,
+) -> tuple[bool, dict]:
+    step = state.get("smoke", {})
+    command = str(step.get("command", "")).strip()
+    if not command:
+        return False, state
+
+    result = _run_prepare_command(
+        "smoke_preflight",
+        command,
+        working_dir=working_dir,
+        env=env,
+        log_path=log_path,
+    )
+    if result.returncode != 0:
+        return False, state
+
+    timestamp = now_iso()
+    ready_detail = "Smoke passed before install/data; reusing the current workspace as-is."
+    expected_paths = _expected_paths_status(repo_path, state.get("expected_paths", []))
+    state["expected_path_status"] = expected_paths
+    missing = [item["path"] for item in expected_paths if not item.get("exists")]
+    if missing:
+        _append_warning(
+            state,
+            "Smoke passed even though these expected paths were absent: "
+            + ", ".join(missing)
+            + ". Treating smoke success as the stronger readiness signal.",
+        )
+
+    for step_name in ("install", "data"):
+        current = state.get(step_name, {})
+        current["status"] = "skipped"
+        current["detail"] = "Skipped because smoke preflight already proved the workspace is ready"
+        current["started_at"] = ""
+        current["finished_at"] = ""
+
+    step["status"] = "completed"
+    step["detail"] = ready_detail
+    step["started_at"] = timestamp
+    step["finished_at"] = timestamp
+    state["status"] = "completed"
+    state["errors"] = []
+    state["unresolved"] = []
+    write_bootstrap_state(state_path, state)
+
+    if on_prepare_event is not None:
+        from open_researcher.research_events import PrepareStepCompleted, PrepareStepStarted
+
+        on_prepare_event(
+            PrepareStepStarted(
+                step="smoke",
+                command=command,
+                source=str(step.get("source", "")).strip(),
+            )
+        )
+        on_prepare_event(
+            PrepareStepCompleted(
+                step="smoke",
+                status="completed",
+                log_path=str(log_path),
+                detail=ready_detail,
+            )
+        )
+    return True, state
 
 
 def _ensure_python_environment(repo_path: Path, state: dict, log_path: Path) -> tuple[int, str]:
@@ -485,6 +590,22 @@ def run_bootstrap_prepare(
     working_dir = (repo_path / str(state.get("working_dir", ".") or ".")).resolve()
     env = _command_env(str(state.get("python_env", {}).get("executable", "")))
 
+    ready, state = _try_smoke_preflight(
+        repo_path,
+        state,
+        working_dir=working_dir,
+        env=env,
+        log_path=log_path,
+        state_path=state_path,
+        on_prepare_event=on_prepare_event,
+    )
+    if ready:
+        if on_prepare_event is not None:
+            from open_researcher.research_events import PrepareCompleted
+
+            on_prepare_event(PrepareCompleted(status="completed", unresolved=0))
+        return 0, state
+
     for step_name in _step_names():
         step = state.get(step_name, {})
         command = str(step.get("command", "")).strip()
@@ -512,15 +633,13 @@ def run_bootstrap_prepare(
         step["status"] = "running"
         step["started_at"] = now_iso()
         write_bootstrap_state(state_path, state)
-        result = subprocess.run(
+        result = _run_prepare_command(
+            step_name,
             command,
-            shell=True,
-            cwd=str(working_dir),
-            text=True,
-            capture_output=True,
+            working_dir=working_dir,
             env=env,
+            log_path=log_path,
         )
-        _append_prepare_log(log_path, step_name, command, result)
         step["finished_at"] = now_iso()
         if result.returncode != 0:
             step["status"] = "failed"
@@ -567,14 +686,20 @@ def run_bootstrap_prepare(
     state["expected_path_status"] = expected_paths
     missing = [item["path"] for item in expected_paths if not item.get("exists")]
     if missing:
-        state["status"] = "failed"
-        state["errors"] = [f"Expected paths missing after prepare: {', '.join(missing)}"]
-        write_bootstrap_state(state_path, state)
-        if on_prepare_event is not None:
-            from open_researcher.research_events import PrepareFailed
+        if str(state.get("smoke", {}).get("status", "")).strip() == "completed":
+            _append_warning(
+                state,
+                "Expected paths were still missing after prepare, but smoke succeeded: " + ", ".join(missing),
+            )
+        else:
+            state["status"] = "failed"
+            state["errors"] = [f"Expected paths missing after prepare: {', '.join(missing)}"]
+            write_bootstrap_state(state_path, state)
+            if on_prepare_event is not None:
+                from open_researcher.research_events import PrepareFailed
 
-            on_prepare_event(PrepareFailed(step="expected_paths", detail=state["errors"][0]))
-        return 1, state
+                on_prepare_event(PrepareFailed(step="expected_paths", detail=state["errors"][0]))
+            return 1, state
 
     state["status"] = "completed"
     state["errors"] = []
@@ -610,6 +735,10 @@ def format_bootstrap_dry_run(repo_path: Path, research_dir: Path, cfg: ResearchC
     if state.get("unresolved"):
         lines.append("[bold yellow]Unresolved:[/bold yellow]")
         for item in state["unresolved"]:
+            lines.append(f"[yellow]- {item}[/yellow]")
+    if state.get("warnings"):
+        lines.append("[bold yellow]Warnings:[/bold yellow]")
+        for item in state["warnings"]:
             lines.append(f"[yellow]- {item}[/yellow]")
     if not state.get("errors") and not state.get("unresolved"):
         lines.append("[green]Bootstrap resolution is ready.[/green]")

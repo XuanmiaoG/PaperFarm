@@ -151,6 +151,9 @@ def _load_bootstrap_state(research: Path) -> dict | None:
     unresolved = payload.get("unresolved", [])
     if not isinstance(unresolved, list):
         return {"error": "unresolved must be a list"}
+    warnings = payload.get("warnings", [])
+    if not isinstance(warnings, list):
+        return {"error": "warnings must be a list"}
     expected_status = payload.get("expected_path_status", [])
     if not isinstance(expected_status, list):
         return {"error": "expected_path_status must be a list"}
@@ -163,6 +166,7 @@ def _load_bootstrap_state(research: Path) -> dict | None:
         "requires_gpu": bool(payload.get("requires_gpu", False)),
         "steps": steps,
         "errors": [str(item) for item in errors],
+        "warnings": [str(item) for item in warnings],
         "unresolved": [str(item) for item in unresolved],
         "expected_path_status": [item for item in expected_status if isinstance(item, dict)],
         "log_path": str(payload.get("smoke", {}).get("log_path", "")).strip()
@@ -381,6 +385,10 @@ def print_status(repo_path: Path, sparkline: bool = False) -> None:
             if bootstrap.get("unresolved"):
                 lines.append("    Unresolved:")
                 for item in bootstrap["unresolved"][:3]:
+                    lines.append(f"      - {item}")
+            if bootstrap.get("warnings"):
+                lines.append("    Warnings:")
+                for item in bootstrap["warnings"][:3]:
                     lines.append(f"      - {item}")
             expected_status = bootstrap.get("expected_path_status", [])
             missing_paths = [item.get("path", "") for item in expected_status if not item.get("exists")]
