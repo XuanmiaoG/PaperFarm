@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
+from open_researcher.token_tracking import TokenMetrics
+
 
 class AgentAdapter(ABC):
     """Base class that all agent adapters must implement."""
@@ -20,10 +22,15 @@ class AgentAdapter(ABC):
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._config = config or {}
+        self.last_token_metrics: TokenMetrics | None = None
 
     def check_installed(self) -> bool:
         """Return True if the agent binary is available on PATH."""
         return shutil.which(self.command) is not None
+
+    def _try_parse_token_line(self, line: str) -> TokenMetrics | None:
+        """Parse token usage from an output line. Override in subclasses."""
+        return None
 
     @abstractmethod
     def build_command(self, program_md: Path, workdir: Path) -> list[str]:
@@ -71,9 +78,16 @@ class AgentAdapter(ABC):
         with self._lock:
             self._proc = proc
         try:
+            self.last_token_metrics = None
+            _metrics = TokenMetrics()
             for line in proc.stdout:
+                parsed = self._try_parse_token_line(line)
+                if parsed:
+                    _metrics = parsed
                 if on_output:
                     on_output(line.rstrip("\n"))
+            if _metrics.tokens_total > 0:
+                self.last_token_metrics = _metrics
         finally:
             if proc.stdout:
                 proc.stdout.close()

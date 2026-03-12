@@ -6,6 +6,7 @@ import csv
 import json
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from filelock import FileLock
@@ -46,7 +47,19 @@ from open_researcher.research_events import (
     ScoutCompleted,
     ScoutFailed,
     ScoutStarted,
+    TokenBudgetExceeded,
+    TokenBudgetWarning,
+    TokenMetricsUpdated,
 )
+from open_researcher.token_tracking import (
+    BudgetCheckResult,
+    TokenLedger,
+    TokenMetrics,
+    estimate_cost,
+    estimate_tokens,
+    save_ledger,
+)
+from open_researcher.graph_context import enforce_context_token_limit, filter_graph_for_context
 from open_researcher.research_graph import ResearchGraphStore
 from open_researcher.research_memory import ResearchMemoryStore
 from open_researcher.results_cmd import load_results, write_final_results_tsv
@@ -117,6 +130,7 @@ class ResearchLoop:
         self.last_experiments_completed = 0
         self.had_experiment_failure = False
         self.last_experiment_failure_code: int | None = None
+        self.token_ledger = TokenLedger()
 
     def _effective_max_experiments(self, override: int | None = None) -> int:
         if override is not None and override > 0:
@@ -128,6 +142,86 @@ class ResearchLoop:
             self.emit(AgentOutput(phase=phase, detail=line))
 
         return on_output
+
+    def _check_token_budget(self) -> BudgetCheckResult | None:
+        """Check token budget and return action with reason, or None if within budget."""
+        if self.cfg.token_budget <= 0:
+            return None
+        ratio = self.token_ledger.cumulative.tokens_total / self.cfg.token_budget
+        if ratio >= 1.0:
+            return BudgetCheckResult(action=self.cfg.budget_policy, reason="exceeded", ratio=ratio)
+        if ratio >= self.cfg.budget_warning_threshold:
+            return BudgetCheckResult(action="warn", reason="threshold", ratio=ratio)
+        return None
+
+    def _accumulate_token_metrics(
+        self,
+        agent,
+        phase: str,
+        experiment_num: int | None = None,
+    ) -> None:
+        """Read agent's last_token_metrics and accumulate into ledger."""
+        metrics = getattr(agent, "last_token_metrics", None)
+        if not isinstance(metrics, TokenMetrics):
+            return
+        self.token_ledger.record(metrics, phase=phase, experiment_num=experiment_num)
+        budget_remaining = None
+        if self.cfg.token_budget > 0:
+            budget_remaining = max(0, self.cfg.token_budget - self.token_ledger.cumulative.tokens_total)
+        self.emit(TokenMetricsUpdated(
+            phase=phase,
+            experiment_num=experiment_num,
+            tokens_input=metrics.tokens_input,
+            tokens_output=metrics.tokens_output,
+            tokens_total=metrics.tokens_total,
+            budget_remaining=budget_remaining,
+        ))
+        save_ledger(self.token_ledger, self.research_dir / "token_ledger.json")
+
+    def _apply_budget_check(self) -> str | None:
+        """Check budget and apply policy. Returns 'stop' if loop should break, else None."""
+        result = self._check_token_budget()
+        if result is None:
+            return None
+        if result.reason == "threshold":
+            self.emit(TokenBudgetWarning(
+                tokens_used=self.token_ledger.cumulative.tokens_total,
+                token_budget=self.cfg.token_budget,
+                ratio=result.ratio,
+            ))
+            return None
+        # reason == "exceeded"
+        self.emit(TokenBudgetExceeded(
+            tokens_used=self.token_ledger.cumulative.tokens_total,
+            token_budget=self.cfg.token_budget,
+            policy=result.action,
+        ))
+        if result.action == "stop":
+            return "stop"
+        if result.action == "pause":
+            self._pause(self.research_dir, f"Token budget exceeded ({self.token_ledger.cumulative.tokens_total:,} tokens)")
+        return None
+
+    @contextmanager
+    def _pruned_graph_context(self, graph_store):
+        """Temporarily replace research_graph.json with a pruned version for agent consumption."""
+        if self.cfg.context_token_limit <= 0:
+            yield
+            return
+        graph_path = graph_store.path
+        backup_path = graph_path.with_suffix(".json.bak")
+        try:
+            full_graph = graph_store.read()
+            filtered = filter_graph_for_context(full_graph)
+            filtered = enforce_context_token_limit(filtered, self.cfg.context_token_limit)
+            import shutil
+            shutil.copy2(graph_path, backup_path)
+            atomic_write_json(graph_path, filtered)
+            yield
+        finally:
+            if backup_path.exists():
+                import shutil
+                shutil.move(str(backup_path), str(graph_path))
 
     def _run_agent(
         self, agent, *, phase: str, program_file: str, error_tag: str, env: dict[str, str] | None = None
@@ -469,6 +563,7 @@ class ResearchLoop:
                     )
                 finally:
                     watchdog.stop()
+                self._accumulate_token_metrics(exp_agent, phase="experimenting", experiment_num=experiments_completed)
 
                 last_code = code
                 self.emit(
@@ -483,6 +578,9 @@ class ResearchLoop:
                         selection_reason_code=trace.get("selection_reason_code", ""),
                     )
                 )
+                if self._apply_budget_check() == "stop":
+                    self.last_stop_reason = "token_budget"
+                    return experiments_completed, last_code, "token_budget"
 
                 status = self._latest_result_status_since(results_before_count)
                 try:
@@ -625,6 +723,28 @@ class ResearchLoop:
                 )
             )
 
+            # Accumulate token metrics from parallel worker
+            token_data = item.get("_token_metrics")
+            if token_data:
+                metrics = TokenMetrics(
+                    tokens_input=token_data["tokens_input"],
+                    tokens_output=token_data["tokens_output"],
+                )
+                with lock:
+                    self.token_ledger.record(metrics, phase="experimenting", experiment_num=run_num)
+                    save_ledger(self.token_ledger, self.research_dir / "token_ledger.json")
+                budget_remaining = None
+                if self.cfg.token_budget > 0:
+                    budget_remaining = max(0, self.cfg.token_budget - self.token_ledger.cumulative.tokens_total)
+                self.emit(TokenMetricsUpdated(
+                    phase="experimenting",
+                    experiment_num=run_num,
+                    tokens_input=metrics.tokens_input,
+                    tokens_output=metrics.tokens_output,
+                    tokens_total=metrics.tokens_total,
+                    budget_remaining=budget_remaining,
+                ))
+
             item_status = str(item.get("status", "")).strip()
             result = item.get("result") if isinstance(item.get("result"), dict) else {}
             verdict = str(result.get("verdict", "")).strip()
@@ -667,6 +787,7 @@ class ResearchLoop:
             program_file="scout_program.md",
             error_tag="scout",
         )
+        self._accumulate_token_metrics(agent, phase="scouting")
         self.emit(ScoutCompleted(exit_code=code))
         if code != 0:
             self.emit(ScoutFailed(exit_code=code))
@@ -725,6 +846,10 @@ class ResearchLoop:
                 program_file="manager_program.md",
                 error_tag="manager",
             )
+            self._accumulate_token_metrics(manager_agent, phase="experimenting")
+            if self._apply_budget_check() == "stop":
+                self.last_stop_reason = "token_budget"
+                break
             exit_codes["manager"] = manager_code
             if manager_code != 0:
                 self.emit(RoleFailed(role="manager", exit_code=manager_code))
@@ -780,10 +905,14 @@ class ResearchLoop:
                     error_tag="critic",
                 )
                 exit_codes["critic"] = critic_code
+                self._accumulate_token_metrics(critic_agent, phase="experimenting")
                 if critic_code != 0:
                     self.emit(RoleFailed(role="critic", exit_code=critic_code))
                     self.last_failed_role = "critic"
                     self.last_stop_reason = "critic_failed"
+                    break
+                if self._apply_budget_check() == "stop":
+                    self.last_stop_reason = "token_budget"
                     break
                 after_preflight = graph_store.read()
                 rejected_items = self._frontier_status_delta(
@@ -887,6 +1016,9 @@ class ResearchLoop:
                     self.had_experiment_failure = True
                     self.last_experiment_failure_code = exit_codes["exp"] or 1
                 stop_reason = stop_reason_ref["value"]
+                if self._apply_budget_check() == "stop":
+                    self.last_stop_reason = "token_budget"
+                    break
             else:
                 experiments_completed, last_code, stop_reason = self._run_serial_experiment_batch(
                     exp_agent,
@@ -933,10 +1065,14 @@ class ResearchLoop:
                     error_tag="critic",
                 )
                 exit_codes["critic"] = critic_code
+                self._accumulate_token_metrics(critic_agent, phase="experimenting")
                 if critic_code != 0:
                     self.emit(RoleFailed(role="critic", exit_code=critic_code))
                     self.last_failed_role = "critic"
                     self.last_stop_reason = "critic_failed"
+                    break
+                if self._apply_budget_check() == "stop":
+                    self.last_stop_reason = "token_budget"
                     break
                 after_post = graph_store.read()
                 new_claims = self._new_rows_by_id(before_post, after_post, "claim_updates")
