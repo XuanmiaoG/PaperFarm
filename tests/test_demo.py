@@ -1,6 +1,7 @@
 """Tests for the demo command."""
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -8,6 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from open_researcher.demo_cmd import _build_idea_pool, _build_results_tsv, _populate_research, _setup_demo_repo
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def test_build_results_tsv():
@@ -72,9 +77,8 @@ def test_demo_cli_help():
         [sys.executable, "-m", "open_researcher.cli", "--help"],
         capture_output=True,
         text=True,
-        env={**__import__("os").environ, "NO_COLOR": "1"},
     )
-    assert "demo" in result.stdout
+    assert "demo" in _strip_ansi(result.stdout)
 
 
 def test_demo_cli_serve_option():
@@ -83,10 +87,10 @@ def test_demo_cli_serve_option():
         [sys.executable, "-m", "open_researcher.cli", "demo", "--help"],
         capture_output=True,
         text=True,
-        env={**__import__("os").environ, "NO_COLOR": "1"},
     )
-    assert "--serve" in result.stdout
-    assert "--port" in result.stdout
+    plain = _strip_ansi(result.stdout)
+    assert "--serve" in plain
+    assert "--port" in plain
 
 
 def test_setup_demo_repo_creates_git_and_research(tmp_path):
