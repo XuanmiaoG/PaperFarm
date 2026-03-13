@@ -14,6 +14,7 @@ from open_researcher.graph_protocol import (
 )
 from open_researcher.parallel_runtime import run_parallel_experiment_batch
 from open_researcher.research_events import (
+    AgentOutput,
     ReviewAutoConfirmed,
     RoleFailed,
     SessionCompleted,
@@ -31,6 +32,10 @@ from open_researcher.research_loop import (
 )
 from open_researcher.research_loop import (
     set_paused as _set_paused,
+)
+from open_researcher.session_hygiene import (
+    describe_runtime_session_reset,
+    reset_runtime_session_state,
 )
 from open_researcher.workflow_options import apply_worker_override
 
@@ -210,6 +215,17 @@ def do_run_headless(
             logger.on_event(RoleFailed(role="prepare", exit_code=prepare_code))
             logger.on_event(SessionFailed(failed_role="prepare", exit_code=prepare_code))
             return prepare_code
+        reset_summary = reset_runtime_session_state(research, source="headless_run")
+        if reset_summary["changed"]:
+            logger.on_event(
+                AgentOutput(
+                    phase="init",
+                    detail=(
+                        "[system] Reset stale runtime state before manager loop: "
+                        + describe_runtime_session_reset(reset_summary)
+                    ),
+                )
+            )
         loop.run_graph_protocol(
             manager_agent,
             critic_agent,
@@ -306,6 +322,17 @@ def do_start_headless(
             return prepare_code
 
         logger.on_event(ReviewAutoConfirmed())
+        reset_summary = reset_runtime_session_state(research, source="headless_start")
+        if reset_summary["changed"]:
+            logger.on_event(
+                AgentOutput(
+                    phase="init",
+                    detail=(
+                        "[system] Reset stale runtime state before manager loop: "
+                        + describe_runtime_session_reset(reset_summary)
+                    ),
+                )
+            )
 
         parallel_runner = _build_parallel_runner(
             repo_path=repo_path,

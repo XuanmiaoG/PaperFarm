@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from filelock import FileLock
 
@@ -16,6 +17,24 @@ from open_researcher.storage import atomic_write_json
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_visible_cuda_devices(value: Any) -> frozenset[int] | None:
+    """Parse CUDA_VISIBLE_DEVICES-style local device scopes."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    devices: set[int] = set()
+    for token in raw.split(","):
+        part = token.strip()
+        if not part:
+            continue
+        try:
+            devices.add(int(part))
+        except ValueError:
+            return None
+    return frozenset(devices)
 
 
 class GPUManager:
@@ -27,10 +46,17 @@ class GPUManager:
         remote_hosts: list[dict] | None = None,
         *,
         allow_same_gpu_packing: bool = True,
+        allowed_local_devices: Iterable[int] | None = None,
     ):
         self.status_file = status_file
         self.remote_hosts = remote_hosts or []
         self.allow_same_gpu_packing = allow_same_gpu_packing
+        inferred_scope = (
+            parse_visible_cuda_devices(os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+            if allowed_local_devices is None
+            else frozenset(int(device) for device in allowed_local_devices)
+        )
+        self.allowed_local_devices = inferred_scope
         self._lock = FileLock(str(status_file) + ".lock")
 
     def _default_payload(self) -> dict:
@@ -87,8 +113,12 @@ class GPUManager:
         return normalized
 
     def _normalize_reservation(self, item: dict) -> dict:
+        kind = str(item.get("kind", "experiment") or "experiment").strip() or "experiment"
         shareable = bool(item.get("shareable", True))
         exclusive = bool(item.get("exclusive", False))
+        if kind == "user_pin":
+            exclusive = True
+            shareable = False
         if exclusive:
             shareable = False
         return {
@@ -98,7 +128,7 @@ class GPUManager:
             "gpu_count": max(int(item.get("gpu_count", 1) or 1), 1),
             "shareable": shareable,
             "exclusive": exclusive,
-            "kind": str(item.get("kind", "experiment") or "experiment").strip() or "experiment",
+            "kind": kind,
             "started_at": str(item.get("started_at", "") or "").strip(),
             "frontier_id": str(item.get("frontier_id", "") or "").strip(),
             "execution_id": str(item.get("execution_id", "") or "").strip(),
@@ -146,7 +176,10 @@ class GPUManager:
             return []
         if result.returncode != 0:
             return []
-        return self._parse_nvidia_smi(result.stdout, host="local")
+        rows = self._parse_nvidia_smi(result.stdout, host="local")
+        if self.allowed_local_devices is None:
+            return rows
+        return [row for row in rows if int(row.get("device", -1)) in self.allowed_local_devices]
 
     def detect_remote(self, host: str, user: str) -> list[dict]:
         cmd = "nvidia-smi --query-gpu=index,memory.total,memory.used,memory.free,utilization.gpu --format=csv"
@@ -281,16 +314,30 @@ class GPUManager:
         kind: str = "experiment",
         metadata: dict | None = None,
         preferred: dict | None = None,
+        required_devices: list[dict] | None = None,
     ) -> list[dict] | None:
         self.refresh()
         group_count = max(int(count or 0), 1)
         request_memory = max(int(memory_mb or 0), 0)
         meta = metadata if isinstance(metadata, dict) else {}
+        required_device_order: dict[tuple[str, int], int] = {}
+        for index, item in enumerate(required_devices or []):
+            if not isinstance(item, dict):
+                continue
+            host = str(item.get("host", "local") or "local").strip() or "local"
+            try:
+                device = int(item.get("device", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            required_device_order.setdefault((host, device), index)
         with self._lock:
             data = self._read()
             gpus = [self._normalize_gpu_row(gpu) for gpu in data.get("gpus", []) if isinstance(gpu, dict)]
-            candidates_by_host: dict[str, list[tuple[int, int, tuple[str, int], dict]]] = {}
+            candidates_by_host: dict[str, list[tuple[int, int, int, tuple[str, int], dict]]] = {}
             for gpu in gpus:
+                key = (str(gpu["host"]), int(gpu["device"]))
+                if required_device_order and key not in required_device_order:
+                    continue
                 if not self._packable(gpu, memory_mb=request_memory, shareable=shareable, exclusive=exclusive):
                     continue
                 leftover = self.effective_free_memory(gpu) - request_memory
@@ -305,18 +352,24 @@ class GPUManager:
                 )
                 host = str(gpu["host"])
                 candidates_by_host.setdefault(host, []).append(
-                    (preferred_match, leftover, (str(gpu["host"]), int(gpu["device"])), gpu)
+                    (
+                        preferred_match,
+                        required_device_order.get(key, group_count + 1),
+                        leftover,
+                        key,
+                        gpu,
+                    )
                 )
-            host_plans: list[tuple[int, int, str, list[tuple[int, int, tuple[str, int], dict]]]] = []
+            host_plans: list[tuple[int, int, str, list[tuple[int, int, int, tuple[str, int], dict]]]] = []
             for host, host_candidates in candidates_by_host.items():
-                host_candidates.sort(key=lambda item: (item[0], item[1], item[2][1]))
+                host_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3][1]))
                 if len(host_candidates) < group_count:
                     continue
                 selected = host_candidates[:group_count]
                 host_plans.append(
                     (
                         min(item[0] for item in selected),
-                        sum(item[1] for item in selected),
+                        sum(item[2] for item in selected),
                         host,
                         selected,
                     )
@@ -327,7 +380,7 @@ class GPUManager:
             selected = host_plans[0][3]
 
             reservations: list[dict] = []
-            selected_keys = {(host, device) for _, _, (host, device), _ in selected}
+            selected_keys = {(host, device) for _, _, _, (host, device), _ in selected}
             for gpu in gpus:
                 key = (str(gpu["host"]), int(gpu["device"]))
                 if key not in selected_keys:
@@ -362,6 +415,7 @@ class GPUManager:
         *,
         metadata: dict | None = None,
         preferred: dict | None = None,
+        required_devices: list[dict] | None = None,
     ) -> list[dict] | None:
         return self.reserve_group(
             count=max(int(request.get("gpu_count", 0) or 0), 1),
@@ -372,6 +426,7 @@ class GPUManager:
             kind=str((metadata or {}).get("kind", "experiment") or "experiment"),
             metadata=metadata,
             preferred=preferred,
+            required_devices=required_devices,
         )
 
     def release_reservations(self, reservations: list[dict]) -> None:

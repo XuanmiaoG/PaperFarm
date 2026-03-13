@@ -89,6 +89,17 @@ index, memory.total [MiB], memory.used [MiB], memory.free [MiB], utilization.gpu
 """
 
 
+NVIDIA_SMI_6GPU = """\
+index, memory.total [MiB], memory.used [MiB], memory.free [MiB], utilization.gpu [%]
+0, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+1, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+2, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+3, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+4, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+5, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+"""
+
+
 def test_allocate_group(mgr):
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=NVIDIA_SMI_4GPU)
@@ -113,6 +124,69 @@ def test_allocate_group_single(mgr):
         result = mgr.allocate_group(count=1, tag="exp-single")
     assert result is not None
     assert len(result) == 1
+
+
+def test_detect_local_honors_allowed_devices(gpu_file):
+    mgr = GPUManager(gpu_file, allowed_local_devices={4, 5})
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=NVIDIA_SMI_6GPU)
+        gpus = mgr.detect_local()
+    assert [gpu["device"] for gpu in gpus] == [4, 5]
+
+
+def test_reserve_group_respects_required_devices(gpu_file):
+    mgr = GPUManager(gpu_file)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=NVIDIA_SMI_6GPU)
+        reservations = mgr.reserve_group(
+            count=2,
+            tag="exp-pinned",
+            memory_mb=4096,
+            shareable=False,
+            exclusive=True,
+            required_devices=[
+                {"host": "local", "device": 4},
+                {"host": "local", "device": 5},
+            ],
+        )
+    assert reservations is not None
+    assert {(item["host"], item["device"]) for item in reservations} == {("local", 4), ("local", 5)}
+
+
+def test_user_pin_reservations_block_allocation(gpu_file):
+    rows = []
+    for device in range(6):
+        row = {
+            "host": "local",
+            "device": device,
+            "memory_total": 49140,
+            "memory_used": 0,
+            "memory_free": 49140,
+            "utilization": 0,
+            "reservations": [],
+        }
+        if device < 4:
+            row["reservations"].append(
+                {
+                    "id": f"pin-{device}",
+                    "tag": "user_pinned_excluded",
+                    "kind": "user_pin",
+                }
+            )
+        rows.append(row)
+    gpu_file.write_text(json.dumps({"gpus": rows}, indent=2), encoding="utf-8")
+    mgr = GPUManager(gpu_file)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=NVIDIA_SMI_6GPU)
+        reservations = mgr.reserve_group(
+            count=2,
+            tag="exp-free",
+            memory_mb=4096,
+            shareable=False,
+            exclusive=True,
+        )
+    assert reservations is not None
+    assert {(item["host"], item["device"]) for item in reservations} == {("local", 4), ("local", 5)}
 
 
 def test_release_group(mgr, gpu_file):

@@ -1,5 +1,7 @@
 """Tests for explicit parallel runtime profiles and plugins."""
 
+from unittest.mock import MagicMock, patch
+
 from open_researcher.config import ResearchConfig
 from open_researcher.parallel_runtime import (
     build_parallel_worker_plugins,
@@ -110,3 +112,28 @@ def test_parallel_runtime_keeps_requested_workers_without_pinned_cuda(monkeypatc
     workers, reason = resolve_parallel_worker_count(cfg)
     assert workers == 4
     assert reason is None
+
+
+def test_parallel_runtime_gpu_allocator_respects_pinned_cuda_scope(tmp_path, monkeypatch):
+    nvidia_smi_output = """\
+index, memory.total [MiB], memory.used [MiB], memory.free [MiB], utilization.gpu [%]
+0, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+1, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+2, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+3, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+4, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+5, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    research = repo / ".research"
+    research.mkdir()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    cfg = ResearchConfig(max_workers=4, enable_gpu_allocation=True)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=nvidia_smi_output)
+        _profile, plugins = build_parallel_worker_plugins(repo, research, cfg)
+        slots = plugins.gpu_allocator.worker_slots(4)
+    assert plugins.gpu_allocator is not None
+    assert slots
+    assert {slot["device"] for slot in slots if isinstance(slot, dict)} <= {4, 5}

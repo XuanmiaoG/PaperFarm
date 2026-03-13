@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from open_researcher.control_plane import issue_control_command
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -592,3 +593,171 @@ def test_do_run_headless_continues_existing_workspace_without_scout(tmp_path):
     assert "session_started" in events
     assert "scout_started" not in events
     assert "session_completed" in events
+
+
+def test_do_run_headless_resets_stale_runtime_state_before_manager(tmp_path):
+    _make_git_repo(tmp_path)
+
+    from open_researcher.init_cmd import do_init
+
+    do_init(tmp_path, tag="test")
+    _set_bootstrap_auto_prepare(tmp_path, False)
+    research = tmp_path / ".research"
+    (research / "goal.md").write_text("# Research Goal\n\nContinue existing run.\n", encoding="utf-8")
+    issue_control_command(research / "control.json", command="pause", source="test", reason="stale pause")
+    issue_control_command(research / "control.json", command="skip_current", source="test", reason="stale skip")
+    (research / "activity.json").write_text(
+        json.dumps(
+            {
+                "experiment_agent": {
+                    "status": "running",
+                    "detail": "2 active worker(s)",
+                    "active_workers": 2,
+                    "workers": [
+                        {"id": "worker-0", "status": "running"},
+                        {"id": "worker-1", "status": "idle"},
+                    ],
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    manager_agent = MagicMock()
+    manager_agent.name = "manager"
+    manager_agent.terminate = MagicMock()
+    critic_agent = MagicMock()
+    critic_agent.name = "critic"
+    critic_agent.terminate = MagicMock()
+    exp_agent = MagicMock()
+    exp_agent.name = "exp"
+    exp_agent.terminate = MagicMock()
+
+    observed: dict[str, dict] = {}
+
+    def fake_run_graph_protocol(self, *args, **kwargs):
+        from open_researcher.control_plane import read_control
+
+        observed["control"] = read_control(self.research_dir / "control.json")
+        observed["activity"] = json.loads((self.research_dir / "activity.json").read_text(encoding="utf-8"))
+        return {}
+
+    buf = StringIO()
+
+    with patch(
+        "open_researcher.headless._resolve_agent",
+        side_effect=[manager_agent, critic_agent, exp_agent],
+    ), patch(
+        "open_researcher.headless.run_bootstrap_prepare",
+        return_value=(0, {}),
+    ), patch(
+        "open_researcher.headless.ResearchLoop.run_graph_protocol",
+        new=fake_run_graph_protocol,
+    ):
+        from open_researcher.headless import do_run_headless
+
+        exit_code = do_run_headless(
+            repo_path=tmp_path,
+            max_experiments=1,
+            agent_name=None,
+            workers=1,
+            stream=buf,
+        )
+
+    lines = [json.loads(line) for line in buf.getvalue().strip().splitlines() if line.strip()]
+    reset_details = [
+        row.get("detail", "")
+        for row in lines
+        if row.get("event") == "agent_output" and "Reset stale runtime state" in row.get("detail", "")
+    ]
+    assert exit_code == 0
+    assert observed["control"]["paused"] is False
+    assert observed["control"]["skip_current"] is False
+    assert observed["activity"]["experiment_agent"]["workers"] == []
+    assert reset_details
+
+
+def test_do_start_headless_resets_stale_runtime_state_before_manager(tmp_path):
+    _make_git_repo(tmp_path)
+
+    from open_researcher.init_cmd import do_init
+
+    do_init(tmp_path, tag="test")
+    _set_bootstrap_auto_prepare(tmp_path, False)
+    research = tmp_path / ".research"
+    issue_control_command(research / "control.json", command="pause", source="test", reason="stale pause")
+    issue_control_command(research / "control.json", command="skip_current", source="test", reason="stale skip")
+    (research / "activity.json").write_text(
+        json.dumps(
+            {
+                "experiment_agent": {
+                    "status": "queued",
+                    "detail": "1 frontier item(s) ready for execution",
+                    "active_workers": 1,
+                    "workers": [{"id": "worker-0", "status": "running"}],
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    scout_agent = MagicMock()
+    scout_agent.name = "scout"
+    scout_agent.run.return_value = 0
+    scout_agent.terminate = MagicMock()
+    manager_agent = MagicMock()
+    manager_agent.name = "manager"
+    manager_agent.terminate = MagicMock()
+    critic_agent = MagicMock()
+    critic_agent.name = "critic"
+    critic_agent.terminate = MagicMock()
+    exp_agent = MagicMock()
+    exp_agent.name = "exp"
+    exp_agent.terminate = MagicMock()
+
+    observed: dict[str, dict] = {}
+
+    def fake_run_graph_protocol(self, *args, **kwargs):
+        from open_researcher.control_plane import read_control
+
+        observed["control"] = read_control(self.research_dir / "control.json")
+        observed["activity"] = json.loads((self.research_dir / "activity.json").read_text(encoding="utf-8"))
+        return {}
+
+    buf = StringIO()
+
+    with patch(
+        "open_researcher.headless._resolve_agent",
+        side_effect=[scout_agent, manager_agent, critic_agent, exp_agent],
+    ), patch(
+        "open_researcher.headless.run_bootstrap_prepare",
+        return_value=(0, {}),
+    ), patch(
+        "open_researcher.headless.ResearchLoop.run_graph_protocol",
+        new=fake_run_graph_protocol,
+    ):
+        from open_researcher.headless import do_start_headless
+
+        exit_code = do_start_headless(
+            repo_path=tmp_path,
+            goal="fresh start",
+            max_experiments=1,
+            agent_name=None,
+            tag="test",
+            workers=1,
+            stream=buf,
+        )
+
+    lines = [json.loads(line) for line in buf.getvalue().strip().splitlines() if line.strip()]
+    reset_details = [
+        row.get("detail", "")
+        for row in lines
+        if row.get("event") == "agent_output" and "Reset stale runtime state" in row.get("detail", "")
+    ]
+    assert exit_code == 0
+    assert observed["control"]["paused"] is False
+    assert observed["control"]["skip_current"] is False
+    assert observed["activity"]["experiment_agent"]["workers"] == []
+    assert reset_details

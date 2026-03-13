@@ -22,6 +22,7 @@ from open_researcher.graph_protocol import (
     resolve_role_agent_name,
 )
 from open_researcher.parallel_runtime import run_parallel_experiment_batch
+from open_researcher.research_events import AgentOutput
 from open_researcher.research_loop import (
     ResearchLoop,
 )
@@ -35,6 +36,10 @@ from open_researcher.research_loop import (
     set_paused as _set_paused,
 )
 from open_researcher.role_programs import resolve_role_program_file
+from open_researcher.session_hygiene import (
+    describe_runtime_session_reset,
+    reset_runtime_session_state,
+)
 from open_researcher.tui_runner import (
     print_exit_summary,
     run_tui_session,
@@ -165,6 +170,17 @@ def _run_prepare_then_graph(
         except RuntimeError:
             pass
         return
+    reset_summary = reset_runtime_session_state(research, source="tui_run")
+    if reset_summary["changed"]:
+        event_handler(
+            AgentOutput(
+                phase="init",
+                detail=(
+                    "[system] Reset stale runtime state before manager loop: "
+                    + describe_runtime_session_reset(reset_summary)
+                ),
+            )
+        )
     exit_codes.update(
         loop.run_graph_protocol(
             manager_agent,
@@ -383,6 +399,17 @@ def do_start(
             start_daemon(_run_scout)
 
         def _start_runtime() -> None:
+            reset_summary = reset_runtime_session_state(research, source="tui_start")
+            if reset_summary["changed"]:
+                renderer.on_event(
+                    AgentOutput(
+                        phase="init",
+                        detail=(
+                            "[system] Reset stale runtime state before manager loop: "
+                            + describe_runtime_session_reset(reset_summary)
+                        ),
+                    )
+                )
             parallel_runner = _build_parallel_runner(
                 repo_path=repo_path,
                 research_dir=research,

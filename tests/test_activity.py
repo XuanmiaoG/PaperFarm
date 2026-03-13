@@ -83,6 +83,22 @@ def test_remove_worker(tmp_path):
     am.remove_worker("experiment_agent", "w-001")
     data = am.get("experiment_agent")
     assert len(data["workers"]) == 0
+    assert data["status"] == "idle"
+    assert data["detail"] == "0 active worker(s)"
+
+
+def test_clear_workers(tmp_path):
+    from open_researcher.activity import ActivityMonitor
+
+    am = ActivityMonitor(tmp_path)
+    am.update_worker("experiment_agent", "w-001", status="running", idea="idea-001", gpus=[0])
+    am.update_worker("experiment_agent", "w-002", status="waiting_resources", idea="", gpus=[])
+    am.clear_workers("experiment_agent", status="idle", detail="reset after reconcile")
+    data = am.get("experiment_agent")
+    assert data["workers"] == []
+    assert data["active_workers"] == 0
+    assert data["status"] == "idle"
+    assert data["detail"] == "reset after reconcile"
 
 
 def test_update_worker_sets_agent_idle_when_last_worker_idles(tmp_path):

@@ -88,8 +88,27 @@ class ActivityMonitor:
                 if str(worker.get("status", "")).strip() not in {"", "idle"}
             ]
             entry["active_workers"] = len(active_workers)
-            if not active_workers and str(entry.get("status", "")).strip() == "running":
+            if active_workers:
+                entry["status"] = "running"
+                entry["detail"] = f"{len(active_workers)} active worker(s)"
+            else:
                 entry["status"] = "idle"
+                entry["detail"] = "0 active worker(s)"
+            entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+            data[agent_key] = entry
+
+        locked_update_json(self.path, self._lock, _do, default=dict)
+
+    def clear_workers(self, agent_key: str, **kwargs) -> None:
+        """Drop all worker entries for an agent and reset top-level worker counters."""
+
+        def _do(data):
+            entry = data.get(agent_key, {})
+            entry["workers"] = []
+            entry["active_workers"] = 0
+            entry.setdefault("status", "idle")
+            entry.setdefault("detail", "0 active worker(s)")
+            entry.update(kwargs)
             entry["updated_at"] = datetime.now(timezone.utc).isoformat()
             data[agent_key] = entry
 

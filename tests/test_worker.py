@@ -13,10 +13,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from open_researcher.control_plane import issue_control_command
+from open_researcher.gpu_manager import GPUManager
 from open_researcher.idea_pool import IdeaPool
 from open_researcher.worker import WorkerManager
 from open_researcher.worker_plugins import (
     FailureMemoryPlugin,
+    GPUAllocatorPlugin,
     GPUAllocation,
     WorkerRuntimePlugins,
     WorkspaceIsolationError,
@@ -702,6 +704,192 @@ def test_worker_manager_preserves_active_detached_runtime_state():
         finally:
             sleeper.terminate()
             sleeper.wait(timeout=5)
+
+
+def test_worker_manager_reconcile_clears_stale_activity_workers():
+    class TrackingManager:
+        def __init__(self, status_rows: list[dict]) -> None:
+            self._status = status_rows
+            self.released: list[dict] = []
+
+        def refresh(self):
+            return self._status
+
+        def release_reservations(self, reservations):
+            self.released.extend(reservations)
+
+    class NoopAllocator:
+        default_memory_per_worker_mb = 4096
+
+        def __init__(self, manager) -> None:
+            self.manager = manager
+
+        def worker_slots(self, max_workers: int):
+            return []
+
+        def select_claimable_idea(self, pending_ideas: list[dict]) -> str | None:
+            return None
+
+        def allocate_for_idea(self, worker_id: str, idea: dict, preferred=None):
+            return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        from open_researcher.activity import ActivityMonitor
+
+        activity = ActivityMonitor(research)
+        activity.update_worker("experiment_agent", "worker-0", status="running", idea="idea-001")
+        activity.update_worker("experiment_agent", "worker-1", status="running", idea="idea-002")
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "stale unfinished run",
+                    "status": "running",
+                    "priority": 1,
+                    "claim_token": "claim-1",
+                    "execution_id": "exec-001",
+                    "frontier_id": "frontier-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                    "protocol": "research-v1",
+                    "created_at": "2026-01-01T00:00:00",
+                }
+            ],
+        )
+        manager = TrackingManager(
+            [
+                {
+                    "host": "local",
+                    "device": 4,
+                    "memory_total": 49140,
+                    "memory_used": 0,
+                    "memory_free": 48520,
+                    "utilization": 0,
+                    "reservations": [
+                        {
+                            "id": "res-1",
+                            "tag": "worker-0",
+                            "kind": "experiment",
+                            "execution_id": "exec-001",
+                            "frontier_id": "frontier-001",
+                        }
+                    ],
+                }
+            ]
+        )
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=lambda: MagicMock(),
+            max_workers=1,
+            on_output=lambda line: None,
+            runtime_plugins=WorkerRuntimePlugins(gpu_allocator=NoopAllocator(manager)),
+        )
+
+        wm._reconcile_parallel_runtime_state()
+
+        state = activity.get("experiment_agent")
+        assert state["workers"] == []
+        assert state["active_workers"] == 0
+        assert state["status"] == "idle"
+
+
+def test_worker_manager_join_clears_finished_worker_activity():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        idea_pool = _make_idea_pool(
+            research,
+            [
+                {
+                    "id": "idea-001",
+                    "description": "Fast worker cleanup",
+                    "status": "pending",
+                    "priority": 1,
+                    "claimed_by": None,
+                    "assigned_experiment": None,
+                    "result": None,
+                    "source": "graph",
+                    "category": "graph",
+                    "gpu_hint": "auto",
+                    "created_at": "2026-01-01T00:00:00",
+                    "protocol": "research-v1",
+                    "frontier_id": "frontier-001",
+                    "execution_id": "exec-001",
+                    "hypothesis_id": "hyp-001",
+                    "experiment_spec_id": "spec-001",
+                }
+            ],
+        )
+
+        def mock_agent_factory():
+            agent = MagicMock()
+            agent.run.return_value = 0
+            agent.terminate = MagicMock()
+            return agent
+
+        wm = WorkerManager(
+            repo_path=tmp_path,
+            research_dir=research,
+            gpu_manager=None,
+            idea_pool=idea_pool,
+            agent_factory=mock_agent_factory,
+            max_workers=1,
+            on_output=lambda line: None,
+            runtime_plugins=WorkerRuntimePlugins(),
+        )
+
+        wm.start()
+        wm.join(timeout=5)
+
+        from open_researcher.activity import ActivityMonitor
+
+        state = ActivityMonitor(research).get("experiment_agent")
+        assert state["workers"] == []
+        assert state["active_workers"] == 0
+        assert state["status"] == "idle"
+
+
+def test_gpu_allocator_honors_execution_shape_gpu_scope():
+    nvidia_smi_output = """\
+index, memory.total [MiB], memory.used [MiB], memory.free [MiB], utilization.gpu [%]
+0, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+1, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+2, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+3, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+4, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+5, 49140 MiB, 0 MiB, 49140 MiB, 0 %
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        research = _make_research_dir(tmp_path)
+        manager = GPUManager(research / "gpu_status.json")
+        allocator = GPUAllocatorPlugin(manager, default_memory_per_worker_mb=4096)
+        idea = {
+            "id": "idea-001",
+            "description": "Pinned 2-GPU run",
+            "execution_shape": {"gpus": "4,5"},
+            "resource_request": {
+                "gpu_count": 2,
+                "gpu_mem_mb": 4096,
+                "exclusive": True,
+                "shareable": False,
+            },
+        }
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=nvidia_smi_output)
+            allocation = allocator.allocate_for_idea("worker-0", idea)
+
+        assert allocation is not None
+        assert allocation.env["CUDA_VISIBLE_DEVICES"] == "4,5"
+        assert {(item["host"], item["device"]) for item in allocation.devices} == {("local", 4), ("local", 5)}
 
 
 def test_worker_manager_rolls_back_failed_run_in_main_repo():

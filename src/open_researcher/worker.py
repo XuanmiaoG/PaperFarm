@@ -110,6 +110,7 @@ class WorkerManager:
         """Start worker threads based on available GPUs."""
         self._stop.clear()
         self._workers.clear()
+        self._activity.clear_workers("experiment_agent", status="idle", detail="0 active worker(s)", idea="")
         self._reconcile_parallel_runtime_state()
         slots: list[dict | None]
         if self._plugins.gpu_allocator is not None:
@@ -591,6 +592,8 @@ class WorkerManager:
         """Wait for all worker threads to finish."""
         for t in self._workers:
             t.join(timeout=timeout)
+        if all(not thread.is_alive() for thread in self._workers):
+            self._activity.clear_workers("experiment_agent", status="idle", detail="0 active worker(s)", idea="")
 
     @property
     def fatal_errors(self) -> int:
@@ -765,6 +768,7 @@ class WorkerManager:
                 )
 
         if restored_pending or finalized_done or released:
+            self._activity.clear_workers("experiment_agent", status="idle", detail="0 active worker(s)", idea="")
             self._activity.update(
                 "experiment_agent",
                 status="idle",
@@ -1363,4 +1367,4 @@ class WorkerManager:
             logger.debug("Fatal worker loop error", exc_info=True)
             self.stop()
         finally:
-            self._activity.update_worker("experiment_agent", wid, status="idle")
+            self._activity.remove_worker("experiment_agent", wid)

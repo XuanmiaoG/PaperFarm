@@ -11,7 +11,7 @@ from typing import Callable
 from open_researcher.agents import get_agent
 from open_researcher.config import ResearchConfig
 from open_researcher.failure_memory import FailureMemoryLedger
-from open_researcher.gpu_manager import GPUManager
+from open_researcher.gpu_manager import GPUManager, parse_visible_cuda_devices
 from open_researcher.worker_plugins import (
     FailureMemoryPlugin,
     GPUAllocatorPlugin,
@@ -80,10 +80,12 @@ def build_parallel_worker_plugins(
     profile = resolve_parallel_runtime_profile(cfg)
     gpu_manager = None
     if profile.gpu_allocation:
+        allowed_local_devices = parse_visible_cuda_devices(os.environ.get("CUDA_VISIBLE_DEVICES", ""))
         gpu_manager = GPUManager(
             research_dir / "gpu_status.json",
             cfg.remote_hosts,
             allow_same_gpu_packing=cfg.gpu_allow_same_gpu_packing,
+            allowed_local_devices=allowed_local_devices,
         )
     plugins = WorkerRuntimePlugins(
         gpu_allocator=GPUAllocatorPlugin(
@@ -118,6 +120,7 @@ def estimate_parallel_frontier_target(research_dir: Path, cfg: ResearchConfig) -
         research_dir / "gpu_status.json",
         cfg.remote_hosts,
         allow_same_gpu_packing=cfg.gpu_allow_same_gpu_packing,
+        allowed_local_devices=parse_visible_cuda_devices(os.environ.get("CUDA_VISIBLE_DEVICES", "")),
     )
     allocator = GPUAllocatorPlugin(
         manager,

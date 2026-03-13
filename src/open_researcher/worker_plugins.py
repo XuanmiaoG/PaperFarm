@@ -258,9 +258,69 @@ class GPUAllocatorPlugin:
         return request
 
     def _request_fits(self, request: dict, status: list[dict]) -> bool:
+        return self._request_fits_on_devices(request, status, required_devices=None)
+
+    @staticmethod
+    def _required_devices_from_execution_shape(execution_shape: dict) -> list[dict]:
+        raw = execution_shape.get("gpus") if isinstance(execution_shape, dict) else None
+        if raw in {None, ""}:
+            return []
+        required: list[dict] = []
+
+        def _append(host: str, device: int) -> None:
+            key = {"host": str(host or "local").strip() or "local", "device": int(device)}
+            if key not in required:
+                required.append(key)
+
+        def _parse_token(token: str) -> None:
+            part = str(token or "").strip()
+            if not part:
+                return
+            if part.startswith("local:"):
+                tail = part.split(":", 1)[1].strip()
+                if tail.isdigit():
+                    _append("local", int(tail))
+                return
+            if part.isdigit():
+                _append("local", int(part))
+
+        if isinstance(raw, str):
+            for token in raw.split(","):
+                _parse_token(token)
+            return required
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    host = str(item.get("host", "local") or "local").strip() or "local"
+                    try:
+                        device = int(item.get("device", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    _append(host, device)
+                    continue
+                _parse_token(str(item))
+        return required
+
+    def _request_fits_on_devices(
+        self,
+        request: dict,
+        status: list[dict],
+        *,
+        required_devices: list[dict] | None,
+    ) -> bool:
         requested_gpu_count = resolve_gpu_count(request, gpu_available=bool(status))
         if requested_gpu_count <= 0:
             return True
+        required_keys = {
+            (
+                str(item.get("host", "local") or "local").strip() or "local",
+                int(item.get("device", 0) or 0),
+            )
+            for item in (required_devices or [])
+            if isinstance(item, dict)
+        }
+        if required_keys and len(required_keys) < requested_gpu_count:
+            return False
         requested_mem = max(
             resolve_gpu_mem_mb(
                 request,
@@ -271,6 +331,12 @@ class GPUAllocatorPlugin:
         )
         matched = 0
         for gpu in status:
+            key = (
+                str(gpu.get("host", "local") or "local").strip() or "local",
+                int(gpu.get("device", 0) or 0),
+            )
+            if required_keys and key not in required_keys:
+                continue
             if self.manager.effective_free_mb(gpu) < requested_mem:
                 continue
             reservations = gpu.get("reservations", [])
@@ -302,7 +368,9 @@ class GPUAllocatorPlugin:
                     if idea_id:
                         return idea_id
                 continue
-            if self._request_fits(self.describe_request(idea), status):
+            execution_shape = normalize_execution_shape(idea.get("execution_shape"))
+            required_devices = self._required_devices_from_execution_shape(execution_shape)
+            if self._request_fits_on_devices(self.describe_request(idea), status, required_devices=required_devices):
                 idea_id = str(idea.get("id", "")).strip()
                 if idea_id:
                     return idea_id
@@ -318,6 +386,7 @@ class GPUAllocatorPlugin:
         execution_shape = dict(plan["execution_shape"]) if plan is not None else normalize_execution_shape(
             idea.get("execution_shape")
         )
+        required_devices = self._required_devices_from_execution_shape(execution_shape)
         saturation_context = dict(plan["saturation_context"]) if plan is not None else {}
         metadata = {
             "kind": "experiment",
@@ -338,7 +407,19 @@ class GPUAllocatorPlugin:
                     "host": plan["gpu"].get("host", "local"),
                     "device": plan["gpu"].get("device", 0),
                 }
-            reservations = self.manager.reserve(worker_id, request, metadata=metadata, preferred=reserve_preferred)
+            if reserve_preferred is None and len(required_devices) == 1:
+                reserve_preferred = dict(required_devices[0])
+            reserve_kwargs = {
+                "metadata": metadata,
+                "preferred": reserve_preferred,
+            }
+            if required_devices:
+                reserve_kwargs["required_devices"] = required_devices
+            try:
+                reservations = self.manager.reserve(worker_id, request, **reserve_kwargs)
+            except TypeError:
+                reserve_kwargs.pop("required_devices", None)
+                reservations = self.manager.reserve(worker_id, request, **reserve_kwargs)
         except Exception:
             logger.debug("GPU reservation failed", exc_info=True)
             return None
